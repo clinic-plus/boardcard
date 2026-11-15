@@ -1185,7 +1185,7 @@ function home(){
     {
       const nowS=Date.now(),sc0={sp:F.sp,ex:F.exam},ids=Object.keys(S.starred).filter(id=>grpIn(S.starred[id],sc0)&&liveQ(id,S.starred[id])),dueS=ids.filter(id=>isDueC(id,nowS)).length;
       const nIds=notedIds(F.sp);
-      rows+=`<div class="folds"><button class="fold" style="--sc:#D99A00" data-saved="1"><span class="ic2">${ico('star')}</span><div class="nm">الأسئلة المحفوظة</div><div class="sub">${ar(ids.length)} سؤال${ids.length?'، '+ar(dueS)+' مستحق':''}</div></button><button class="fold" style="--sc:#1F5FBF" data-notes="1"><span class="ic2">${ico('note')}</span><div class="nm">الملاحظات</div><div class="sub">${ar(nIds.length)} سؤال بملاحظة أو تظليل</div></button></div>`;
+      rows+=`<div class="folds"><button class="fold" style="--sc:#D99A00" data-saved="1"><span class="ic2">${ico('star')}</span><div class="nm">الأسئلة المحفوظة</div><div class="sub">${ar(ids.length)} سؤال${ids.length?'، '+ar(dueS)+' مستحق':''}</div></button><button class="fold" style="--sc:#1F5FBF" data-notes="1"><span class="ic2">${ico('note')}</span><div class="nm">الملاحظات</div><div class="sub">${ar(nIds.length)} سؤال بملاحظة أو تظليل</div></button></div><button class="reqb" data-pq="1" style="border-style:solid;margin-top:10px"><span class="ic">✍️</span><div><div class="nm">أسئلتي الخاصة</div><div class="sub">قم بإنشاء ومراجعة أسئلة خاصة بك</div></div></button>`;
     }
     subjectsOf(F.sp).forEach(x=>{
       const st=stats({s:x.id,ex:F.exam});
@@ -1252,6 +1252,11 @@ function home(){
   app.querySelectorAll('[data-sy]').forEach(b=>b.onclick=()=>start(F.sj,F.sp,b.dataset.sy));
   const svb=app.querySelector('[data-saved]');if(svb)svb.onclick=()=>start(null,F.sp,undefined,{mode:'saved'});
   const nvb=app.querySelector('[data-notes]');if(nvb)nvb.onclick=()=>{if(!(Store.user&&Store.subs[F.sp])){toast('ميزة الملاحظات والتظليل متاحة للمشتركين بهذا الاختصاص.');return}start(null,F.sp,undefined,{mode:'notes'})};
+  const pqc=app.querySelector('[data-pq]');if(pqc)pqc.onclick=()=>{
+    if(!(Store.user&&Store.subs[F.sp])){toast('ميزة أسئلتي الخاصة متاحة للمشتركين بهذا الاختصاص.');return}
+    if(!GZ){toast('حدّث المتصفح لاستعمال هذه الميزة.');return}
+    pqScreen(F.sp);
+  };
   const rqb=$('reqSub');if(rqb)rqb.onclick=()=>requestModal(F.sp);
   $('go').onclick=modeChooser;
   app.querySelectorAll('[data-dq]').forEach(b=>{const f=()=>{const id=b.dataset.dq;id?dqStart(id):dqChooser()};b.onclick=f;b.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();f()}}});
@@ -1389,13 +1394,31 @@ async function loadProgressRemote(){
 }
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')pushProgress()});
 window.addEventListener('pagehide',()=>{pushProgress()});
-/* ---------- ملاحظات المشترك وتظليلاته (تُحفظ في Supabase Storage) ---------- */
-let N={q:{}},NU=null,ND=false,NT=null,hlPend=null;
+/* ---------- ملاحظات المشترك وتظليلاته (تُحفظ على R2 مضغوطة gzip عبر /api/data) ---------- */
+let N={q:{}},NU=null,ND=false,NT=null,NV=0,hlPend=null;
+const GZ=typeof CompressionStream!=='undefined'&&typeof DecompressionStream!=='undefined';
+const NOTES_GZ_MAX=1800000;
+async function gzBlob(str){return await new Response(new Blob([str]).stream().pipeThrough(new CompressionStream('gzip'))).blob()}
+async function gunzipStr(buf){return await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'))).text()}
+async function apiHeaders(){const g=await sb.auth.getSession();const x=g&&g.data&&g.data.session;return x?{Authorization:'Bearer '+x.access_token}:null}
+/* يرجع الكائن، أو null إذا لا توجد نسخة بعد، ويرمي خطأ إذا تعذر الوصول */
+async function dataGet(kind){
+  const h=await apiHeaders();if(!h)throw new Error('no_session');
+  const r=await fetch('/api/data/'+kind,{headers:h,cache:'no-store'});
+  if(r.ok)return JSON.parse(await gunzipStr(await r.arrayBuffer()));
+  if(r.status===404){let j=null;try{j=await r.json()}catch(e){}if(j&&j.error==='none')return null}
+  throw new Error('data_'+r.status);
+}
+async function dataPut(kind,gz,keep){
+  const h=await apiHeaders();if(!h)return false;
+  const r=await fetch('/api/data/'+kind,{method:'PUT',headers:Object.assign({'Content-Type':'application/gzip'},h),body:gz,keepalive:!!keep&&gz.size<60000});
+  return r.ok;
+}
 const noteOk=c=>!!(Store.user&&Store.subs[qSp(c)]);
 function nKey(){return 'bc_notes_'+NU}
 function nCache(){if(!NU)return;try{localStorage.setItem(nKey(),JSON.stringify({d:ND,q:N.q}))}catch(e){}}
 function initN(uid){
-  clearTimeout(NT);N={q:{}};NU=uid||null;ND=false;
+  clearTimeout(NT);N={q:{}};NU=uid||null;ND=false;initPQ(uid);
   if(!NU)return;
   try{const r=JSON.parse(localStorage.getItem(nKey())||'null');if(r&&r.q){N.q=r.q;ND=!!r.d}}catch(e){}
   loadNotesRemote();
@@ -1407,26 +1430,196 @@ function mergeN(rem){
 async function loadNotesRemote(){
   const uid=NU;if(!uid)return;
   try{
+    let j=null;
+    if(GZ){
+      try{j=await dataGet('notes')}catch(e){return}   // تعذر الوصول: نكتفي بالنسخة المحلية ونحاول لاحقاً
+      if(NU!==uid)return;
+      if(j){mergeN(j.q||{});if(ND)pushNotes();return}
+    }
+    /* لا توجد نسخة على R2 بعد (أو المتصفح لا يدعم gzip): نقرأ النسخة القديمة من Supabase وننقلها */
     const r=await sb.storage.from('user-notes').download(uid+'/notes.json');
-    if(NU!==uid||r.error||!r.data)return;
-    const j=JSON.parse(await r.data.text());
-    mergeN((j&&j.q)||{});
+    if(NU!==uid)return;
+    if(!r.error&&r.data){
+      const o=JSON.parse(await r.data.text()),q=(o&&o.q)||{};
+      mergeN(q);
+      if(GZ&&Object.keys(q).length)ND=true;
+    }
     if(ND)pushNotes();
   }catch(e){}
 }
-function touchN(){ND=true;nCache();clearTimeout(NT);NT=setTimeout(pushNotes,2000)}
+function touchN(){ND=true;NV++;nCache();clearTimeout(NT);NT=setTimeout(pushNotes,GZ?12000:2000)}
 async function pushNotes(){
   clearTimeout(NT);
   if(!NU||!ND)return;
-  const uid=NU,body=JSON.stringify({v:1,q:N.q});
-  if(body.length>1800000){toast('ملاحظاتك وصلت للحد الأقصى، احذف بعضها.');return}
+  const uid=NU,v=NV,body=JSON.stringify({v:1,q:N.q});
+  if(!GZ){
+    if(body.length>1800000){toast('ملاحظاتك وصلت للحد الأقصى، احذف بعضها.');return}
+    try{
+      const r=await sb.storage.from('user-notes').upload(uid+'/notes.json',new Blob([body],{type:'application/json'}),{upsert:true,contentType:'application/json'});
+      if(NU===uid&&!r.error&&NV===v){ND=false;nCache()}
+    }catch(e){}
+    return;
+  }
+  let gz;try{gz=await gzBlob(body)}catch(e){return}
+  if(gz.size>NOTES_GZ_MAX){toast('ملاحظاتك وصلت للحد الأقصى، احذف بعضها.');return}
   try{
-    const r=await sb.storage.from('user-notes').upload(uid+'/notes.json',new Blob([body],{type:'application/json'}),{upsert:true,contentType:'application/json'});
-    if(NU===uid&&!r.error){ND=false;nCache()}
+    const ok=await dataPut('notes',gz,true);
+    if(NU===uid&&ok&&NV===v){ND=false;nCache()}
   }catch(e){}
 }
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')pushNotes()});
 window.addEventListener('pagehide',()=>{pushNotes()});
+/* ---------- أسئلتي الخاصة: نص فقط، تُحفظ على R2 مضغوطة (users/<uid>/questions.json.gz) ---------- */
+const PQ_MAX=1000,PQ_GZ_MAX=1000000,PQ_QL=1500,PQ_OL=300,PQ_EL=1500;
+let PQ={q:{}},PQU=null,PQD=false,PQT=null,PQV=0,PS=null;
+const pqKey=()=>'bc_pq_'+PQU;
+function pqCache(){if(!PQU)return;try{localStorage.setItem(pqKey(),JSON.stringify({d:PQD,q:PQ.q}))}catch(e){}}
+function pqPurge(){const lim=Date.now()-30*864e5;Object.keys(PQ.q).forEach(id=>{const e=PQ.q[id];if(e&&e.x&&(e.u||0)<lim)delete PQ.q[id]})}
+function initPQ(uid){
+  clearTimeout(PQT);PQ={q:{}};PQU=uid||null;PQD=false;PS=null;
+  if(!PQU)return;
+  try{const r=JSON.parse(localStorage.getItem(pqKey())||'null');if(r&&r.q){PQ.q=r.q;PQD=!!r.d}}catch(e){}
+  loadPQRemote();
+}
+function pqMerge(rem){
+  Object.keys(rem).forEach(id=>{const a=PQ.q[id],b=rem[id];if(!b)return;if(!a||(b.u||0)>(a.u||0))PQ.q[id]=b});
+  pqPurge();pqCache();
+}
+async function loadPQRemote(){
+  const uid=PQU;if(!uid||!GZ)return;
+  try{
+    const j=await dataGet('pq');
+    if(PQU!==uid)return;
+    if(j)pqMerge(j.q||{});
+    if(PQD)pushPQ();
+  }catch(e){}
+}
+function touchPQ(){PQD=true;PQV++;pqCache();clearTimeout(PQT);PQT=setTimeout(pushPQ,12000)}
+async function pushPQ(){
+  clearTimeout(PQT);
+  if(!PQU||!PQD||!GZ)return;
+  const uid=PQU,v=PQV;let gz;
+  try{gz=await gzBlob(JSON.stringify({v:1,q:PQ.q}))}catch(e){return}
+  if(gz.size>PQ_GZ_MAX){toast('وصلت للحد الأقصى من أسئلتك الخاصة، احذف بعضها.');return}
+  try{const ok=await dataPut('pq',gz,true);if(PQU===uid&&ok&&PQV===v){PQD=false;pqCache()}}catch(e){}
+}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')pushPQ()});
+window.addEventListener('pagehide',()=>{pushPQ()});
+const pqLive=()=>Object.values(PQ.q).filter(e=>e&&!e.x);
+const pqList=sp=>pqLive().filter(e=>e.sp===sp).sort((a,b)=>(b.t||0)-(a.t||0));
+const pqDue=(e,now)=>!e.st||e.st.due==null||e.st.due<=now;
+const pqCut=(t,n)=>{t=String(t||'').replace(/\s+/g,' ').trim();return t.length>n?t.slice(0,n)+'…':t};
+function pqScreen(sp){
+  view='pq';stopTimer();PS=null;
+  const spn=spById(sp).n,list=pqList(sp),now=Date.now(),due=list.filter(e=>pqDue(e,now)).length;
+  app.innerHTML=`<div class="top"><div class="brand">✍️ أسئلتي الخاصة<small>${esc(spn)}</small></div><button class="pill" id="pqb">رجوع</button></div>
+  <div class="sum"><p>${list.length?ar(list.length)+' سؤال خاص بك في '+esc(spn)+'، منها '+ar(due)+' مستحق للمراجعة.':'لا توجد أسئلة خاصة بك في '+esc(spn)+' بعد.'}</p>
+    <div class="r2"><button class="btn" id="pqgo"${due?'':' disabled'}>ابدأ المراجعة</button><button class="btn line" id="pqadd">+ سؤال جديد</button></div></div>
+  <h3 class="sec">أسئلتك</h3>
+  ${list.length?list.map(e=>`<div class="item" style="--sc:#1F5FBF"><div class="grow"><div class="qt" dir="${dirOf(e.q)}">${esc(pqCut(e.q,140))}</div><div class="sub">${pqDue(e,now)?'مستحق للمراجعة':'مراجعتها '+fdate(e.st.due)}</div></div><div style="display:flex;gap:6px;flex:none"><button class="ib" data-pe="${esc(e.id)}">تعديل</button><button class="ib del" data-pd="${esc(e.id)}">حذف</button></div></div>`).join(''):'<div class="empty">اضغط «سؤال جديد» لتكتب أول سؤال لك.</div>'}
+  <p class="note">أسئلتك خاصة بك وحدك ومحفوظة على حسابك. نص فقط بدون صور. الحد الأقصى ${ar(PQ_MAX)} سؤال.</p>`;
+  $('pqb').onclick=home;
+  $('pqadd').onclick=()=>pqForm(sp,null);
+  $('pqgo').onclick=()=>pqStart(sp);
+  app.querySelectorAll('[data-pe]').forEach(b=>b.onclick=()=>pqForm(sp,b.dataset.pe));
+  app.querySelectorAll('[data-pd]').forEach(b=>b.onclick=async()=>{
+    const id=b.dataset.pd,e=PQ.q[id];if(!e)return;
+    if(!(await askConfirm('حذف السؤال','سيُحذف هذا السؤال من أسئلتك الخاصة.','احذف')))return;
+    PQ.q[id]={id:id,sp:e.sp,x:1,u:Date.now()};touchPQ();pqScreen(sp);toast('تم حذف السؤال');
+  });
+  window.scrollTo(0,0);
+}
+function pqForm(sp,id,again){
+  const e=id?PQ.q[id]:null;
+  if(!e&&pqLive().length>=PQ_MAX){toast('وصلت للحد الأقصى ('+ar(PQ_MAX)+' سؤال). احذف بعض الأسئلة لإضافة غيرها.');return}
+  const o=e?e.o.slice():['','','',''];while(o.length<4)o.push('');
+  const orow=i=>`<div class="orow" id="pqr${i}"><input type="radio" name="pqa" value="${i}" aria-label="الجواب الصحيح ${LET[i]}" ${(e?e.a:0)===i?'checked':''}><span class="l">${LET[i]}</span><input class="in" id="pqo${i}" dir="auto" maxlength="${PQ_OL}" value="${esc(o[i])}"></div>`;
+  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>${e?'تعديل السؤال':'سؤال جديد'}</h2>
+    <label class="fld"><span>نص السؤال</span><textarea class="in" id="pqq" dir="auto" maxlength="${PQ_QL}" style="min-height:110px">${esc(e?e.q:'')}</textarea></label>
+    <div class="fld"><span>الخيارات، واختر الجواب الصحيح بالدائرة</span><div id="pqos">${[0,1,2,3].map(orow).join('')}${o.length>4?[4,5].filter(i=>i<o.length).map(orow).join(''):''}</div>
+      <button class="btn line block" type="button" id="pqmore" style="${o.length>=6?'display:none':''}">+ خيار إضافي</button></div>
+    <label class="fld"><span>الشرح (اختياري)</span><textarea class="in" id="pqe" dir="auto" maxlength="${PQ_EL}" style="min-height:90px">${esc(e?e.e:'')}</textarea></label>
+    <p class="err" id="er" role="alert"></p>
+    <div class="r2"><button class="btn" id="pqsv">حفظ</button>${e?'':'<button class="btn line" id="pqsv2">حفظ وإضافة آخر</button>'}</div>`);
+  $('cl').onclick=closeModal;
+  let n=Math.max(4,o.length);
+  $('pqmore').onclick=()=>{
+    if(n>=6)return;
+    $('pqos').insertAdjacentHTML('beforeend',orow(n));n++;
+    if(n>=6)$('pqmore').style.display='none';
+  };
+  const submit=again=>{
+    const text=$('pqq').value.trim();
+    if(!text){$('er').textContent='اكتب نص السؤال.';return}
+    const picked=+(document.querySelector('input[name=pqa]:checked')||{value:0}).value;
+    const opts=[];let a=-1;
+    for(let i=0;i<n;i++){const t=$('pqo'+i).value.trim();if(t){if(i===picked)a=opts.length;opts.push(t)}}
+    if(opts.length<2){$('er').textContent='اكتب خيارين على الأقل.';return}
+    if(a<0){$('er').textContent='الخيار المحدد كجواب صحيح فارغ. حدد خياراً مكتوباً.';return}
+    if(!e&&pqLive().length>=PQ_MAX){$('er').textContent='وصلت للحد الأقصى من الأسئلة.';return}
+    const now=Date.now(),nid=e?e.id:'p'+now.toString(36)+Math.random().toString(36).slice(2,7);
+    const changed=!e||e.q!==text||e.a!==a||JSON.stringify(e.o)!==JSON.stringify(opts);
+    PQ.q[nid]={id:nid,sp:sp,q:text,o:opts,a:a,e:$('pqe').value.trim(),t:e?e.t:now,u:now,st:(e&&!changed)?e.st:(e?e.st:undefined)};
+    if(!PQ.q[nid].st)delete PQ.q[nid].st;
+    touchPQ();toast('تم حفظ السؤال');
+    if(again){pqScreen(sp);pqForm(sp,null)}else{closeModal();pqScreen(sp)}
+  };
+  $('pqsv').onclick=()=>submit(false);
+  const s2=$('pqsv2');if(s2)s2.onclick=()=>submit(true);
+  $('pqq').focus();
+}
+/* مراجعة الأسئلة الخاصة: جلسة مستقلة تستعمل نفس خوارزمية الجدولة ولا تدخل في إحصائيات الأسئلة الرسمية ولا لوحة الصدارة */
+function pqStart(sp){
+  const now=Date.now();
+  const pool=pqList(sp).filter(e=>pqDue(e,now)).sort((a,b)=>((a.st&&a.st.due)||0)-((b.st&&b.st.due)||0));
+  const ids=pool.slice(0,20).map(e=>e.id);
+  if(!ids.length){toast('لا توجد أسئلة مستحقة للمراجعة الآن.');return}
+  PS={sp:sp,Q:ids,i:0,ok:0,n:0,rq:{},t0:0};
+  pqCard();
+}
+function pqCard(){
+  view='pqstudy';stopTimer();
+  while(PS.i<PS.Q.length&&(!PQ.q[PS.Q[PS.i]]||PQ.q[PS.Q[PS.i]].x))PS.i++;
+  if(PS.i>=PS.Q.length){pqSummary();return}
+  const e=PQ.q[PS.Q[PS.i]];PS.t0=Date.now();
+  app.innerHTML=`<div class="sbar"><button class="back" id="pqx" aria-label="رجوع"><span>تراجع</span><span class="ba">${ico('chev')}</span></button>
+    <div class="prog"><div class="bar"><i style="width:${Math.round(100*PS.i/PS.Q.length)}%"></i></div></div>
+    <span class="pill"><bdi dir="ltr">${ar(PS.i+1)} / ${ar(PS.Q.length)}</bdi></span></div>
+  <div class="scene" style="--sc:#1F5FBF"><div class="card"><section class="face front" aria-label="السؤال">
+    <div class="tags"><span class="tag s">أسئلتي الخاصة</span><span class="tag">${esc(spById(PS.sp).n)}</span></div>
+    <p class="q" dir="${dirOf(e.q)}">${fmt(e.q)}</p>
+    <ul class="opts">${e.o.map((t,i)=>`<li><button class="opt" dir="${dirOf(t)}" data-i="${i}"><span class="l">${LET[i]}</span><span class="t">${esc(t)}</span></button></li>`).join('')}</ul>
+  </section></div></div>`;
+  $('pqx').onclick=()=>pqScreen(PS.sp);
+  app.querySelectorAll('.opt').forEach(b=>b.onclick=()=>pqPick(+b.dataset.i));
+  window.scrollTo(0,0);
+}
+function pqPick(i){
+  const e=PQ.q[PS.Q[PS.i]];if(!e||PS.done===e.id+PS.i)return;
+  PS.done=e.id+PS.i;
+  const ok=i===e.a,now=Date.now(),last=PS.i+1>=PS.Q.length&&(ok||PS.rq[e.id]);
+  const st=fsrsApply(Object.assign({},e.st||{}),ok?3:1,now);
+  e.st=st;e.u=now;touchPQ();
+  PS.n++;if(ok)PS.ok++;
+  if(!ok&&!PS.rq[e.id]){PS.rq[e.id]=1;PS.Q.push(e.id)}
+  const isLast=PS.i+1>=PS.Q.length;
+  app.querySelector('.face').innerHTML=`<div class="tags"><span class="tag s">أسئلتي الخاصة</span><span class="tag">${esc(spById(PS.sp).n)}</span></div>
+    <p class="q" dir="${dirOf(e.q)}">${fmt(e.q)}</p>
+    <p class="res ${ok?'ok':'no'}">${ok?'جوابك صحيح':'الجواب خاطئ'}</p>
+    <ul class="opts">${e.o.map((t,k)=>`<li><div class="opt${k===e.a?' good':(k===i?' bad':'')}" dir="${dirOf(t)}"><span class="l">${LET[k]}</span><span class="t">${esc(t)}</span></div></li>`).join('')}</ul>
+    ${e.e?`<div class="exp" dir="${dirOf(e.e)}"><b>الشرح</b>${fmt(e.e)}</div>`:''}
+    <button class="btn block" id="pqn">${isLast?'عرض النتيجة':'السؤال التالي'}</button>`;
+  $('pqn').onclick=()=>{PS.i++;pqCard()};
+  $('pqn').focus({preventScroll:true});
+}
+function pqSummary(){
+  view='pqsum';
+  const n=PS.n,ok=PS.ok,sp=PS.sp,pct=n?Math.round(100*ok/n):0;
+  app.innerHTML=`<div class="top"><div class="brand">✍️ أسئلتي الخاصة<small>${esc(spById(sp).n)}</small></div></div>
+  <div class="sum"><div class="big">${ar(pct)}%</div><p>أجبت ${ar(ok)} من ${ar(n)} إجابة صحيحة.</p><div class="bar"><i style="width:${pct}%"></i></div>
+    <button class="btn block" id="pqback">رجوع لأسئلتي</button></div>`;
+  $('pqback').onclick=()=>pqScreen(sp);
+}
 const noteGet=id=>(N.q[id]&&N.q[id].n)||'';
 const hasNoteC=id=>{const e=N.q[id];return !!e&&(!!e.n||Object.keys(e.h||{}).some(f=>(e.h[f]||[]).length>0))};
 const noteSubj=id=>(N.q[id]&&N.q[id].s)||((Store.qmap[id]||{}).s)||null;
@@ -3692,7 +3885,7 @@ const navPush=()=>{try{history.pushState({bc:1},'')}catch(e){}};
 function navBack(){
   if(modal.innerHTML.trim()){closeModal();return}
   if(view==='home'){if(F.sj){F.sj=null;home();return}if(F.sp){F.sp=null;home();return}return}
-  for(const id of ['bk','dqx','xq','chh','lvb','sqb','dqh','bkR']){const el=$(id);if(el){el.click();return}}
+  for(const id of ['bk','dqx','xq','chh','lvb','sqb','dqh','bkR','pqx','pqb','pqback']){const el=$(id);if(el){el.click();return}}
   home();
 }
 try{history.replaceState({bc:0},'')}catch(e){}

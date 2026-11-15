@@ -1133,6 +1133,7 @@ function renderUsers(){
     b.disabled=true;
     const r=await sb.functions.invoke('student-admin',{body:{action:'delete',user_id:u.id}});
     if(r.error||(r.data&&r.data.error)){b.disabled=false;toast('تعذر حذف الحساب. جرب مرة ثانية.');return}
+    imgCall('DELETE','/api/data?uid='+encodeURIComponent(u.id)).catch(()=>{});
     toast('تم حذف الحساب');loadUsers();
   });
   el.querySelectorAll('[data-ucp]').forEach(b=>b.onclick=()=>{
