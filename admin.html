@@ -548,8 +548,9 @@ function admin(){
   }else if(A.tab==='questions'){
     body=`<div class="item" id="usage" style="--sc:#1A56B0;display:block"><div class="sub">جارٍ حساب استهلاك القاعدة…</div></div>
       <div class="r2" style="margin-top:12px"><button class="btn" id="addQ">+ سؤال جديد</button><button class="btn line" id="bulk">إضافة جماعية</button></div>
-      <div class="r2" style="margin-top:8px"><button class="btn line" id="bkj">نسخة احتياطية (JSON)</button><button class="btn line" id="bkc">تصدير Excel (CSV)</button></div>
-      <button class="btn block" id="bkf" style="margin-top:8px">⬇ نسخة كاملة: الأسئلة + الحسابات والاشتراكات والأكواد</button>
+      <div class="r2" style="margin-top:8px"><button class="btn line" id="bkc">تصدير Excel (CSV)</button><button class="btn line" id="r2st">📊 الاستهلاك</button></div>
+      <button class="btn block" id="bkf" style="margin-top:8px">⬇ نسخة احتياطية شاملة (كل شيء)</button>
+      <div id="r2box" class="hint" style="margin-top:8px"></div>
       <div id="bkinfo" class="hint" style="margin-top:8px"></div>
       <div class="r2" style="margin:12px 0">
         <select class="in" id="fs" aria-label="المادة">${subjOptions(A.fs,true)}</select>
@@ -636,9 +637,9 @@ function admin(){
     $('addQ').onclick=()=>questionForm();
     loadUsage();
     $('bulk').onclick=bulkForm;
-    $('bkj').onclick=()=>exportBackup('json');
     $('bkc').onclick=()=>exportBackup('csv');
-    $('bkf').onclick=()=>exportBackup('full');
+    $('bkf').onclick=fullBackup;
+    $('r2st').onclick=showUsage;
     loadBackupInfo();
     $('fs').onchange=e=>{A.fs=e.target.value;qList()};
     $('fq').oninput=e=>{A.fq=e.target.value.trim();clearTimeout(qList.t);qList.t=setTimeout(qList,300)};
@@ -889,6 +890,125 @@ async function loadBackupInfo(){
     if(g.error||!g.data){toast(errMsg(g.error));return}
     downloadFile('boardcard-accounts-snapshot-'+new Date(rows[0].at).toISOString().slice(0,10)+'.json',JSON.stringify(g.data,null,1),'application/json');
   };
+}
+/* ---------- نسخة شاملة + مراقبة الاستهلاك (R2) ---------- */
+const R2_LIMIT_GB=10,PART_BYTES=200*1048576;
+async function r2Fetch(path){
+  const s=(await sb.auth.getSession()).data.session;
+  if(!s)throw new Error('انتهت الجلسة، سجّل الدخول من جديد.');
+  return fetch(path,{headers:{Authorization:'Bearer '+s.access_token}});
+}
+async function r2ListAll(b,prog){
+  let cur=null,out=[];
+  do{
+    const r=await r2Fetch('/api/admin/list?b='+b+(cur?'&cursor='+encodeURIComponent(cur):''));
+    if(!r.ok)throw new Error(r.status===403?'ما عندك صلاحية.':'تعذر قراءة الملفات من R2. تأكد من رفع آخر نسخة من worker.js.');
+    const j=await r.json();out=out.concat(j.objects||[]);cur=j.cursor;
+    if(prog)prog(out.length);
+  }while(cur);
+  return out;
+}
+const mbs=n=>{const v=n/1048576;return v<10?v.toFixed(1):Math.round(v)};
+async function showUsage(){
+  const el=$('r2box');if(!el)return;
+  el.textContent='جارٍ قراءة الاستهلاك…';
+  try{
+    const [im,us]=await Promise.all([r2ListAll('img'),r2ListAll('user')]);
+    if(!$('r2box'))return;
+    const si=im.reduce((a,o)=>a+o.size,0),su=us.reduce((a,o)=>a+o.size,0);
+    const students=new Set(us.map(o=>o.key.split('/')[1])).size;
+    const tot=si+su,pct=Math.min(100,tot/(R2_LIMIT_GB*1073741824)*100);
+    el.innerHTML=`<div class="item" style="--sc:${pct>=80?'#C0392B':pct>=60?'#B7791F':'#1A56B0'};display:block">
+      <div class="nm">تخزين R2: <bdi>${mbs(tot)} MB</bdi> من <bdi>${R2_LIMIT_GB} GB</bdi> مجانية (${ar(pct<1?'أقل من 1':Math.round(pct))}%)</div>
+      <div class="sub">صور الأسئلة: ${ar(im.length)} ملف، <bdi>${mbs(si)} MB</bdi></div>
+      <div class="sub">بيانات الطلاب: ${ar(us.length)} ملف لـ ${ar(students)} طالب، <bdi>${mbs(su)} MB</bdi></div>
+      <div class="bar"><i style="width:${Math.max(pct,1).toFixed(1)}%"></i></div></div>
+      <div class="hint">حد الطلبات اليومي وعدد الكتابات الشهرية يظهران في لوحة Cloudflare داخل Workers وR2 ثم Metrics. أما استهلاك قاعدة البيانات فهو في البطاقة أعلاه.</div>`;
+  }catch(e){if($('r2box'))$('r2box').textContent=e.message||'تعذر قراءة الاستهلاك.'}
+}
+/* كاتب ZIP بسيط بدون ضغط (الصور والملفات مضغوطة أصلاً) */
+const CRC_T=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})();
+function crc32(u){let c=0xFFFFFFFF;for(let i=0;i<u.length;i++)c=CRC_T[(c^u[i])&255]^(c>>>8);return (c^0xFFFFFFFF)>>>0}
+function zipNew(){return {parts:[],cen:[],off:0,size:0}}
+function zipAdd(z,name,data){
+  const nb=new TextEncoder().encode(name),d=new Date();
+  const time=(d.getHours()<<11)|(d.getMinutes()<<5)|(d.getSeconds()>>1),date=((d.getFullYear()-1980)<<9)|((d.getMonth()+1)<<5)|d.getDate();
+  const crc=crc32(data),h=new DataView(new ArrayBuffer(30));
+  h.setUint32(0,0x04034b50,true);h.setUint16(4,20,true);h.setUint16(6,0x0800,true);h.setUint16(8,0,true);h.setUint16(10,time,true);h.setUint16(12,date,true);
+  h.setUint32(14,crc,true);h.setUint32(18,data.length,true);h.setUint32(22,data.length,true);h.setUint16(26,nb.length,true);h.setUint16(28,0,true);
+  z.parts.push(h.buffer,nb,data);
+  z.cen.push({nb,crc,len:data.length,off:z.off,time,date});
+  z.off+=30+nb.length+data.length;z.size=z.off;
+}
+function zipBlob(z){
+  const cd=[];let cdSize=0;
+  z.cen.forEach(e=>{
+    const h=new DataView(new ArrayBuffer(46));
+    h.setUint32(0,0x02014b50,true);h.setUint16(4,20,true);h.setUint16(6,20,true);h.setUint16(8,0x0800,true);h.setUint16(10,0,true);h.setUint16(12,e.time,true);h.setUint16(14,e.date,true);
+    h.setUint32(16,e.crc,true);h.setUint32(20,e.len,true);h.setUint32(24,e.len,true);h.setUint16(28,e.nb.length,true);h.setUint32(42,e.off,true);
+    cd.push(h.buffer,e.nb);cdSize+=46+e.nb.length;
+  });
+  const t=new DataView(new ArrayBuffer(22));
+  t.setUint32(0,0x06054b50,true);t.setUint16(8,z.cen.length,true);t.setUint16(10,z.cen.length,true);t.setUint32(12,cdSize,true);t.setUint32(16,z.off,true);
+  return new Blob(z.parts.concat(cd,[t.buffer]),{type:'application/zip'});
+}
+function downloadBlob(name,blob){
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;
+  document.body.appendChild(a);a.click();
+  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},60000);
+}
+async function fullBackup(){
+  const el=$('r2box'),say=t=>{const e=$('r2box');if(e)e.textContent=t};
+  try{
+    say('جارٍ جمع الأسئلة والحسابات…');
+    const [sp,su,sy,qs]=await Promise.all([
+      fetchAll(()=>sb.from('specialties').select('*').order('id')),
+      fetchAll(()=>sb.from('subjects').select('*').order('id')),
+      fetchAll(()=>sb.from('systems').select('*').order('id')),
+      fetchAll(()=>sb.from('questions').select('*').order('id'))]);
+    const ac=await sb.rpc('admin_backup_accounts');
+    if(ac.error)throw ac.error;
+    say('جارٍ قراءة قائمة الصور وبيانات الطلاب…');
+    const [im,us]=await Promise.all([r2ListAll('img'),r2ListAll('user')]);
+    const files=im.map(o=>({b:'img',key:o.key,size:o.size,name:'images/'+o.key})).concat(us.map(o=>({b:'user',key:o.key,size:o.size,name:'userdata/'+o.key.slice(6)})));
+    const tot=files.reduce((a,o)=>a+o.size,0),parts=Math.max(1,Math.ceil(tot/PART_BYTES));
+    const ok=await askConfirm('نسخة احتياطية شاملة','ستُنزَّل '+ar(files.length)+' ملف (صور وبيانات طلاب) بحجم حوالي '+ar(mbs(tot))+' MB، مقسومة إلى حوالي '+ar(parts)+' ملف ZIP. اترك هذه الصفحة مفتوحة حتى ينتهي. هل تتابع؟','ابدأ');
+    if(!ok){say('');return}
+    const day=new Date().toISOString().slice(0,10),failed=[];
+    let z=zipNew(),pn=1;const names=[];
+    const dataJson=new TextEncoder().encode(JSON.stringify({app:'boardcard-full',version:2,exported_at:new Date().toISOString(),note:'بدون كلمات السر. الصور في images/ وبيانات الطلاب في userdata/ داخل ملفات ZIP.',content:{specialties:sp,subjects:su,systems:sy,questions:qs},accounts:ac.data},null,1));
+    zipAdd(z,'data.json',dataJson);
+    const flush=()=>{
+      const nm='boardcard-backup-'+day+'-part'+pn+'.zip';names.push(nm);
+      downloadBlob(nm,zipBlob(z));pn++;z=zipNew();
+      return new Promise(r=>setTimeout(r,1500));
+    };
+    let done=0,i=0;
+    const one=async f=>{
+      for(let t=0;t<2;t++){
+        try{
+          const r=await r2Fetch('/api/admin/get?b='+f.b+'&key='+encodeURIComponent(f.key));
+          if(!r.ok)throw new Error(String(r.status));
+          return new Uint8Array(await r.arrayBuffer());
+        }catch(e){}
+      }
+      return null;
+    };
+    while(i<files.length){
+      const batch=files.slice(i,i+6);i+=6;
+      const res=await Promise.all(batch.map(one));
+      for(let k=0;k<batch.length;k++){
+        if(!res[k]){failed.push(batch[k].key);continue}
+        if(z.size>0&&z.size+res[k].length>PART_BYTES)await flush();
+        zipAdd(z,batch[k].name,res[k]);
+      }
+      done+=batch.length;say('جارٍ التنزيل: '+ar(Math.min(done,files.length))+' من '+ar(files.length)+' ملف…');
+    }
+    if(failed.length)zipAdd(z,'FAILED.txt',new TextEncoder().encode(failed.join('\n')));
+    await flush();
+    try{localStorage.setItem('bc_last_backup',String(Date.now()))}catch(e){}
+    say('انتهت النسخة: '+ar(names.length)+' ملف ZIP'+(failed.length?'، وتعذر تنزيل '+ar(failed.length)+' ملف (مذكورة في FAILED.txt)':'')+'. تأكد أن المتصفح سمح بتنزيل عدة ملفات.');
+  }catch(e){say(e.message||errMsg(e))}
 }
 /* ---------- تبويب الأرقام ---------- */
 async function loadStats(){

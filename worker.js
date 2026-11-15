@@ -6,7 +6,7 @@ const PATH_RE = /^q\/\d{6}\/[a-f0-9]{16}\.(webp|jpg)$/;
 // Student data (gzip JSON), private bucket. Limits are measured on the gzip bytes.
 const KINDS = {
   notes: { file: 'notes.json.gz', max: 1800000 },
-  pq: { file: 'questions.json.gz', max: 1000000 }
+  pq: { file: 'questions.json.gz', max: 1500000 }
 };
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -129,11 +129,36 @@ async function data(req, env, url) {
   return json({ error: 'not_found' }, 404);
 }
 
+// Admin-only read access to both buckets, used by the full-backup and usage panel in the admin page.
+async function adminR2(req, env, url) {
+  if (!(await isAdmin(req))) return json({ error: 'forbidden' }, 403);
+  const b = url.searchParams.get('b');
+  const bucket = b === 'img' ? env.IMAGES : b === 'user' ? env.USERDATA : null;
+  if (!bucket) return json({ error: 'bad_bucket' }, 400);
+  if (url.pathname === '/api/admin/list') {
+    const l = await bucket.list({ limit: 1000, cursor: url.searchParams.get('cursor') || undefined });
+    return json({
+      objects: l.objects.map(o => ({ key: o.key, size: o.size })),
+      cursor: l.truncated ? l.cursor : null
+    });
+  }
+  if (url.pathname === '/api/admin/get') {
+    const key = url.searchParams.get('key') || '';
+    const okKey = b === 'img' ? PATH_RE.test(key) : /^users\/[0-9a-f-]{36}\/(notes|questions)\.json\.gz$/i.test(key);
+    if (!okKey) return json({ error: 'bad_key' }, 400);
+    const o = await bucket.get(key);
+    if (!o) return json({ error: 'none' }, 404);
+    return new Response(o.body, { headers: { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store' } });
+  }
+  return json({ error: 'not_found' }, 404);
+}
+
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
     if (url.pathname === '/api/img') return img(req, env, url);
     if (url.pathname === '/api/data' || url.pathname.startsWith('/api/data/')) return data(req, env, url);
+    if (url.pathname === '/api/admin/list' || url.pathname === '/api/admin/get') return adminR2(req, env, url);
     if (url.pathname.startsWith('/api/')) return json({ error: 'not_found' }, 404);
     return env.ASSETS.fetch(req);
   }

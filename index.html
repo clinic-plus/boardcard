@@ -1255,7 +1255,8 @@ function home(){
   const pqc=app.querySelector('[data-pq]');if(pqc)pqc.onclick=()=>{
     if(!(Store.user&&Store.subs[F.sp])){toast('ميزة أسئلتي الخاصة متاحة للمشتركين بهذا الاختصاص.');return}
     if(!GZ){toast('حدّث المتصفح لاستعمال هذه الميزة.');return}
-    pqScreen(F.sp);
+    const sp0=F.sp,uid0=PQU;pqScreen(sp0);
+    if(!PQL)loadPQRemote().then(()=>{if(PQL&&view==='pq'&&PQU===uid0&&!document.getElementById('cl'))pqScreen(sp0)});
   };
   const rqb=$('reqSub');if(rqb)rqb.onclick=()=>requestModal(F.sp);
   $('go').onclick=modeChooser;
@@ -1447,7 +1448,7 @@ async function loadNotesRemote(){
     if(ND)pushNotes();
   }catch(e){}
 }
-function touchN(){ND=true;NV++;nCache();clearTimeout(NT);NT=setTimeout(pushNotes,GZ?12000:2000)}
+function touchN(){ND=true;NV++;nCache();clearTimeout(NT);NT=setTimeout(pushNotes,GZ?120000:2000)}
 async function pushNotes(){
   clearTimeout(NT);
   if(!NU||!ND)return;
@@ -1470,34 +1471,40 @@ async function pushNotes(){
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')pushNotes()});
 window.addEventListener('pagehide',()=>{pushNotes()});
 /* ---------- أسئلتي الخاصة: نص فقط، تُحفظ على R2 مضغوطة (users/<uid>/questions.json.gz) ---------- */
-const PQ_MAX=1000,PQ_GZ_MAX=1000000,PQ_QL=1500,PQ_OL=300,PQ_EL=1500;
-let PQ={q:{}},PQU=null,PQD=false,PQT=null,PQV=0,PS=null;
+const PQ_GZ_MAX=1500000,PQ_QL=1500,PQ_OL=300,PQ_EL=1500;
+let PQ={q:{}},PQU=null,PQD=false,PQT=null,PQV=0,PS=null,PQL=false,PQP=null;
 const pqKey=()=>'bc_pq_'+PQU;
 function pqCache(){if(!PQU)return;try{localStorage.setItem(pqKey(),JSON.stringify({d:PQD,q:PQ.q}))}catch(e){}}
 function pqPurge(){const lim=Date.now()-30*864e5;Object.keys(PQ.q).forEach(id=>{const e=PQ.q[id];if(e&&e.x&&(e.u||0)<lim)delete PQ.q[id]})}
 function initPQ(uid){
-  clearTimeout(PQT);PQ={q:{}};PQU=uid||null;PQD=false;PS=null;
+  clearTimeout(PQT);PQ={q:{}};PQU=uid||null;PQD=false;PS=null;PQL=false;PQP=null;
   if(!PQU)return;
   try{const r=JSON.parse(localStorage.getItem(pqKey())||'null');if(r&&r.q){PQ.q=r.q;PQD=!!r.d}}catch(e){}
-  loadPQRemote();
 }
 function pqMerge(rem){
   Object.keys(rem).forEach(id=>{const a=PQ.q[id],b=rem[id];if(!b)return;if(!a||(b.u||0)>(a.u||0))PQ.q[id]=b});
   pqPurge();pqCache();
 }
-async function loadPQRemote(){
-  const uid=PQU;if(!uid||!GZ)return;
-  try{
-    const j=await dataGet('pq');
-    if(PQU!==uid)return;
-    if(j)pqMerge(j.q||{});
-    if(PQD)pushPQ();
-  }catch(e){}
+/* تحميل الأسئلة الخاصة من السيرفر عند الحاجة فقط (فتح الصفحة أو قبل أول رفع) لتقليل الطلبات */
+function loadPQRemote(){
+  const uid=PQU;if(!uid||!GZ)return Promise.resolve();
+  if(PQL)return Promise.resolve();
+  if(PQP)return PQP;
+  const p=(async()=>{
+    try{
+      const j=await dataGet('pq');
+      if(PQU!==uid)return;
+      if(j)pqMerge(j.q||{});
+      PQL=true;
+    }catch(e){}
+  })().finally(()=>{if(PQP===p)PQP=null});
+  PQP=p;return p;
 }
-function touchPQ(){PQD=true;PQV++;pqCache();clearTimeout(PQT);PQT=setTimeout(pushPQ,12000)}
+function touchPQ(){PQD=true;PQV++;pqCache();clearTimeout(PQT);PQT=setTimeout(pushPQ,120000)}
 async function pushPQ(){
   clearTimeout(PQT);
   if(!PQU||!PQD||!GZ)return;
+  if(!PQL){await loadPQRemote();if(!PQL||!PQD)return}
   const uid=PQU,v=PQV;let gz;
   try{gz=await gzBlob(JSON.stringify({v:1,q:PQ.q}))}catch(e){return}
   if(gz.size>PQ_GZ_MAX){toast('وصلت للحد الأقصى من أسئلتك الخاصة، احذف بعضها.');return}
@@ -1517,7 +1524,7 @@ function pqScreen(sp){
     <div class="r2"><button class="btn" id="pqgo"${due?'':' disabled'}>ابدأ المراجعة</button><button class="btn line" id="pqadd">+ سؤال جديد</button><button class="btn line" id="pqaddf">+ بطاقة جديدة <bdi dir="ltr">(flashcard)</bdi></button></div></div>
   <h3 class="sec">أسئلتك</h3>
   ${list.length?list.map(e=>`<div class="item" style="--sc:#1F5FBF"><div class="grow"><div class="qt" dir="${dirOf(e.q)}">${esc(pqCut(e.q,140))}</div><div class="sub">${e.k==='f'?'بطاقة · ':'سؤال · '}${pqDue(e,now)?'مستحق للمراجعة':'مراجعتها '+fdate(e.st.due)}</div></div><div style="display:flex;gap:6px;flex:none"><button class="ib" data-pe="${esc(e.id)}">تعديل</button><button class="ib del" data-pd="${esc(e.id)}">حذف</button></div></div>`).join(''):'<div class="empty">اضغط «سؤال جديد» أو «بطاقة جديدة» لتبدأ.</div>'}
-  <p class="note">أسئلتك خاصة بك وحدك ومحفوظة على حسابك. نص فقط بدون صور (بطاقة أمامية وخلفية أو سؤال اختيارات). الحد الأقصى ${ar(PQ_MAX)} سؤال.</p>`;
+  <p class="note">أسئلتك خاصة بك وحدك ومحفوظة على حسابك. نص فقط بدون صور (بطاقة أمامية وخلفية أو سؤال اختيارات).</p>`;
   $('pqb').onclick=home;
   $('pqadd').onclick=()=>pqForm(sp,null);
   $('pqaddf').onclick=()=>pqForm(sp,null,'f');
@@ -1532,8 +1539,7 @@ function pqScreen(sp){
 }
 function pqForm(sp,id,kind){
   const e=id?PQ.q[id]:null;const isF=e?e.k==='f':kind==='f';
-  if(!e&&pqLive().length>=PQ_MAX){toast('وصلت للحد الأقصى ('+ar(PQ_MAX)+' سؤال). احذف بعض الأسئلة لإضافة غيرها.');return}
-  const o=e&&e.o?e.o.slice():['','','',''];while(o.length<4)o.push('');
+    const o=e&&e.o?e.o.slice():['','','',''];while(o.length<4)o.push('');
   const orow=i=>`<div class="orow" id="pqr${i}"><input type="radio" name="pqa" value="${i}" aria-label="الجواب الصحيح ${LET[i]}" ${(e?e.a:0)===i?'checked':''}><span class="l">${LET[i]}</span><input class="in" id="pqo${i}" dir="auto" maxlength="${PQ_OL}" value="${esc(o[i])}"></div>`;
   showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>${isF?(e?'تعديل البطاقة':'بطاقة جديدة'):(e?'تعديل السؤال':'سؤال جديد')}</h2>
     <label class="fld"><span>${isF?'الوجه الأمامي (السؤال)':'نص السؤال'}</span><textarea class="in" id="pqq" dir="auto" maxlength="${PQ_QL}" style="min-height:110px">${esc(e?e.q:'')}</textarea></label>
@@ -1555,8 +1561,7 @@ function pqForm(sp,id,kind){
     if(isF){
       const back=$('pqb2').value.trim();
       if(!back){$('er').textContent='اكتب الوجه الخلفي (الجواب).';return}
-      if(!e&&pqLive().length>=PQ_MAX){$('er').textContent='وصلت للحد الأقصى من الأسئلة.';return}
-      const now=Date.now(),nid=e?e.id:'p'+now.toString(36)+Math.random().toString(36).slice(2,7);
+        const now=Date.now(),nid=e?e.id:'p'+now.toString(36)+Math.random().toString(36).slice(2,7);
       const it={id:nid,sp:sp,k:'f',q:text,b:back,e:$('pqe').value.trim(),t:e?e.t:now,u:now};
       if(e&&e.st)it.st=e.st;
       PQ.q[nid]=it;touchPQ();toast('تم حفظ البطاقة');
@@ -1568,7 +1573,6 @@ function pqForm(sp,id,kind){
     for(let i=0;i<n;i++){const t=$('pqo'+i).value.trim();if(t){if(i===picked)a=opts.length;opts.push(t)}}
     if(opts.length<2){$('er').textContent='اكتب خيارين على الأقل.';return}
     if(a<0){$('er').textContent='الخيار المحدد كجواب صحيح فارغ. حدد خياراً مكتوباً.';return}
-    if(!e&&pqLive().length>=PQ_MAX){$('er').textContent='وصلت للحد الأقصى من الأسئلة.';return}
     const now=Date.now(),nid=e?e.id:'p'+now.toString(36)+Math.random().toString(36).slice(2,7);
     const changed=!e||e.q!==text||e.a!==a||JSON.stringify(e.o)!==JSON.stringify(opts);
     PQ.q[nid]={id:nid,sp:sp,q:text,o:opts,a:a,e:$('pqe').value.trim(),t:e?e.t:now,u:now,st:(e&&!changed)?e.st:(e?e.st:undefined)};
