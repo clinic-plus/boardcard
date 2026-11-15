@@ -329,6 +329,41 @@ async function imgCall(method,path,body,type){
   }
   return j;
 }
+const imgKind=u=>{
+  if(u.length>12&&u[0]===0x52&&u[1]===0x49&&u[2]===0x46&&u[3]===0x46&&u[8]===0x57&&u[9]===0x45&&u[10]===0x42&&u[11]===0x50)return 'webp';
+  if(u.length>3&&u[0]===0xff&&u[1]===0xd8&&u[2]===0xff)return 'jpg';
+  if(u.length>8&&u[0]===0x89&&u[1]===0x50&&u[2]===0x4e&&u[3]===0x47)return 'png';
+  return null;
+};
+async function readZip(buf){
+  const dv=new DataView(buf),u8=new Uint8Array(buf);
+  let e=-1;
+  for(let i=buf.byteLength-22;i>=Math.max(0,buf.byteLength-65557);i--){if(dv.getUint32(i,true)===0x06054b50){e=i;break}}
+  if(e<0)throw new Error('ملف ZIP غير صالح.');
+  const n=dv.getUint16(e+10,true);let p=dv.getUint32(e+16,true);
+  const out=[],td=new TextDecoder('utf-8');
+  for(let k=0;k<n;k++){
+    if(p+46>buf.byteLength||dv.getUint32(p,true)!==0x02014b50)throw new Error('ملف ZIP غير صالح.');
+    const method=dv.getUint16(p+10,true),csz=dv.getUint32(p+20,true),nl=dv.getUint16(p+28,true),xl=dv.getUint16(p+30,true),cl=dv.getUint16(p+32,true),lo=dv.getUint32(p+42,true);
+    const name=td.decode(u8.subarray(p+46,p+46+nl));
+    p+=46+nl+xl+cl;
+    if(name.endsWith('/'))continue;
+    const ds=lo+30+dv.getUint16(lo+26,true)+dv.getUint16(lo+28,true);
+    let data=u8.subarray(ds,ds+csz);
+    if(method===8){
+      const s=new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      data=new Uint8Array(await new Response(s).arrayBuffer());
+    }else if(method!==0)continue;
+    out.push({name:name,data:data});
+  }
+  return out;
+}
+async function prepImage(rec){
+  const k=imgKind(rec.data);
+  if(!k)throw new Error('صيغة الصورة غير مدعومة: '+rec.name);
+  if((k==='webp'||k==='jpg')&&rec.data.length<=IMG_MAXBYTES)return new Blob([rec.data],{type:k==='webp'?'image/webp':'image/jpeg'});
+  return shrinkImage(new File([rec.data],rec.name,{type:k==='png'?'image/png':(k==='webp'?'image/webp':'image/jpeg')}));
+}
 const uploadImg=async blob=>(await imgCall('POST',IMG_API,blob,blob.type)).path;
 const deleteImgFile=p=>{if(p)imgCall('DELETE',IMG_API+'?path='+encodeURIComponent(p)).catch(()=>{})};
 const COLORS=['#1F5FBF','#3B82C4','#5B6FD6','#1E8FB0','#4F5FA8','#2D6A9F','#0E4A8A','#7A98D8'];
@@ -1608,12 +1643,13 @@ function parseBulk(text){
   const blocks=text.split(/^\s*-{3,}\s*$/m).map(b=>b.trim()).filter(Boolean);
   const items=[],errors=[];
   blocks.forEach((b,bi)=>{
-    const q=[],o=[],ex=[];let ans=null,mode='q',m;
+    const q=[],o=[],ex=[];let ans=null,mode='q',m,img=null;
     for(const raw of b.split('\n')){
       const l=raw.trim();
       if(!l){if(mode==='e')ex.push('');continue}
       if(m=l.match(/^(?:الجواب|الاجابة|الإجابة|answer)\s*[:：]\s*(.+)$/i)){ans=m[1].trim();mode='a';continue}
       if(m=l.match(/^(?:الشرح|التفسير|explanation)\s*[:：]\s*(.*)$/i)){ex.push(m[1]);mode='e';continue}
+      if(mode!=='e'&&(m=l.match(/^(?:image|img|صورة)\s*[:：]\s*(\S.*)$/i))){img=m[1].trim();continue}
       if(mode==='e'){ex.push(l);continue}
       if(mode!=='a'&&(m=l.match(/^([أابجدهـA-Fa-f])\s*[\)\.\-:]\s*(.+)$/))){o.push({k:normKey(m[1]),t:m[2].trim()});mode='o';continue}
       if(mode==='q')q.push(l);else if(mode==='o'&&o.length)o[o.length-1].t+=' '+l;
@@ -1625,7 +1661,8 @@ function parseBulk(text){
     let a=-1;
     if(ans){const k=normKey(ans);a=o.findIndex(x=>x.k===k);if(a<0&&/^[1-6]/.test(ans.trim()))a=parseInt(ans.trim(),10)-1}
     if(a<0||a>=o.length){errors.push('السؤال '+ar(n)+': الجواب غير محدد أو لا يطابق الخيارات.');return}
-    items.push({q:q.join('\n'),o:o.map(x=>x.t),a:a,e:ex.join('\n').trim()});
+    if(img&&!/\.(jpe?g|png|webp)$/i.test(img)){errors.push('السؤال '+ar(n)+': اسم الصورة يجب أن ينتهي بـ jpg أو png أو webp.');return}
+    items.push({q:q.join('\n'),o:o.map(x=>x.t),a:a,e:ex.join('\n').trim(),img:img});
   });
   return {items,errors};
 }
@@ -1640,9 +1677,14 @@ C) Basra
 D) Mosul
 Answer: B
 Explanation: Baghdad is the capital.
----</pre></div>
+Image: figure1.jpg
+---</pre>سطر <bdi>Image:</bdi> اختياري، ويُطابَق مع اسم الصورة في ملف الصور.</div>
     <div class="banner" id="lastq" style="margin-bottom:12px"><span class="hint" style="margin:0">جارٍ تحميل آخر الأسئلة المضافة…</span></div>
     <label class="fld"><span>الأسئلة</span><textarea class="in" id="bt" dir="auto" style="min-height:180px"></textarea></label>
+    <div class="fld"><span>صور الأسئلة (اختياري)</span>
+      <input type="file" id="bimg" accept=".zip,image/*" multiple style="display:none">
+      <button type="button" class="btn line block" id="bimgPick">اختر ملف الصور (ZIP أو عدة صور)</button>
+      <div class="hint" id="bimgInfo" style="margin-top:6px"></div></div>
     <p class="err" id="er" role="alert"></p>
     <div id="pv"></div>
     <button class="btn block" id="an">تحليل النص</button>`);
@@ -1673,20 +1715,68 @@ Explanation: Baghdad is the capital.
   $('fS').addEventListener('change',loadLast);
   loadLast();
   let parsed=null;
+  const imgs=new Map();
+  const baseName=n=>String(n).split('/').pop().split('\\').pop().toLowerCase();
+  const errText=e=>(e&&e.message&&!e.code&&/[\u0600-\u06FF]/.test(e.message))?e.message:errMsg(e);
+  $('bimgPick').onclick=()=>$('bimg').click();
+  $('bimg').onchange=async()=>{
+    const fl=Array.from($('bimg').files||[]);$('bimg').value='';
+    if(!fl.length)return;
+    $('bimgInfo').textContent='جارٍ قراءة الصور…';
+    try{
+      for(const f of fl){
+        if(/\.zip$/i.test(f.name)||/zip/.test(f.type)){
+          for(const z of await readZip(await f.arrayBuffer())){
+            const b=baseName(z.name);
+            if(b.startsWith('.')||/__macosx/i.test(z.name)||!/\.(jpe?g|png|webp)$/.test(b))continue;
+            imgs.set(b,{name:b,data:z.data});
+          }
+        }else if(/^image\//.test(f.type)||/\.(jpe?g|png|webp)$/i.test(f.name)){
+          imgs.set(baseName(f.name),{name:f.name,data:new Uint8Array(await f.arrayBuffer())});
+        }
+      }
+      parsed=null;$('an').textContent='تحليل النص';$('pv').innerHTML='';
+      $('bimgInfo').textContent=imgs.size?'تم تحميل '+ar(imgs.size)+' صورة.':'لم أجد صوراً صالحة في الملف.';
+    }catch(e){$('bimgInfo').textContent=errText(e)}
+  };
   $('an').onclick=async()=>{
     if(parsed&&parsed.items.length){
       const meta=readMeta();$('an').disabled=true;
+      const up=new Map();
       try{
+        const names=Array.from(new Set(parsed.items.filter(x=>x.img).map(x=>baseName(x.img))));
+        const total=names.length;let nDone=0,stop=false;
+        const worker=async()=>{
+          while(!stop&&names.length){
+            const nm=names.shift();
+            try{
+              const path=await uploadImg(await prepImage(imgs.get(nm)));
+              up.set(nm,path);nDone++;
+              $('pv').innerHTML='<div class="banner">جارٍ رفع الصور '+ar(nDone)+' / '+ar(total)+'…</div>';
+            }catch(e){stop=true;throw e}
+          }
+        };
+        if(total){
+          const rs=await Promise.allSettled([worker(),worker(),worker()]);
+          const bad=rs.find(r=>r.status==='rejected');
+          if(bad){up.forEach(p=>deleteImgFile(p));throw bad.reason}
+        }
         const t0=Date.now();
-        await putMany('questions',parsed.items.map((it,i)=>({id:newId('q')+i,s:meta.s,sy:meta.sy,ex:meta.ex,y:meta.y,free:meta.free,q:it.q,o:it.o,a:it.a,e:it.e,t:t0+i})));
+        try{
+          await putMany('questions',parsed.items.map((it,i)=>({id:newId('q')+i,s:meta.s,sy:meta.sy,ex:meta.ex,y:meta.y,free:meta.free,q:it.q,o:it.o,a:it.a,e:it.e,img:it.img?up.get(baseName(it.img)):null,t:t0+i})));
+        }catch(e){up.forEach(p=>deleteImgFile(p));throw e}
         A.last={s:meta.s,ex:meta.ex,y:meta.y||A.last.y,free:meta.free};
         closeModal();toast('تمت إضافة '+ar(parsed.items.length)+' سؤال');
-      }catch(e){$('er').textContent=errMsg(e);$('an').disabled=false}
+      }catch(e){$('er').textContent=errText(e);$('pv').innerHTML='';$('an').disabled=false}
       return;
     }
     parsed=parseBulk($('bt').value);
     $('er').textContent='';
-    $('pv').innerHTML=`<div class="banner ${parsed.items.length?'ok':''}">تم التعرف على ${ar(parsed.items.length)} سؤال صحيح${parsed.errors.length?'، و'+ar(parsed.errors.length)+' فيها مشاكل':''}.</div>${parsed.errors.map(x=>`<p class="err">${esc(x)}</p>`).join('')}`;
+    const miss=[];
+    parsed.items=parsed.items.filter(it=>{if(it.img&&!imgs.has(baseName(it.img))){miss.push(it.img);return false}return true});
+    parsed.errors=parsed.errors.concat(miss.map(n=>'الصورة غير موجودة ضمن الصور المختارة: '+n));
+    const withImg=parsed.items.filter(it=>it.img).length;
+    $('pv').innerHTML=`<div class="banner ${parsed.items.length?'ok':''}">تم التعرف على ${ar(parsed.items.length)} سؤال صحيح${withImg?'، منها '+ar(withImg)+' بصور':''}${parsed.errors.length?'، و'+ar(parsed.errors.length)+' فيها مشاكل':''}.</div>${parsed.errors.map(x=>`<p class="err">${esc(x)}</p>`).join('')}`;
     if(parsed.items.length)$('an').textContent='أضف '+ar(parsed.items.length)+' سؤال';
     else parsed=null;
   };
