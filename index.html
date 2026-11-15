@@ -1514,12 +1514,13 @@ function pqScreen(sp){
   const spn=spById(sp).n,list=pqList(sp),now=Date.now(),due=list.filter(e=>pqDue(e,now)).length;
   app.innerHTML=`<div class="top"><div class="brand">✍️ أسئلتي الخاصة<small>${esc(spn)}</small></div><button class="pill" id="pqb">رجوع</button></div>
   <div class="sum"><p>${list.length?ar(list.length)+' سؤال خاص بك في '+esc(spn)+'، منها '+ar(due)+' مستحق للمراجعة.':'لا توجد أسئلة خاصة بك في '+esc(spn)+' بعد.'}</p>
-    <div class="r2"><button class="btn" id="pqgo"${due?'':' disabled'}>ابدأ المراجعة</button><button class="btn line" id="pqadd">+ سؤال جديد</button></div></div>
+    <div class="r2"><button class="btn" id="pqgo"${due?'':' disabled'}>ابدأ المراجعة</button><button class="btn line" id="pqadd">+ سؤال جديد</button><button class="btn line" id="pqaddf">+ بطاقة جديدة <bdi dir="ltr">(flashcard)</bdi></button></div></div>
   <h3 class="sec">أسئلتك</h3>
-  ${list.length?list.map(e=>`<div class="item" style="--sc:#1F5FBF"><div class="grow"><div class="qt" dir="${dirOf(e.q)}">${esc(pqCut(e.q,140))}</div><div class="sub">${pqDue(e,now)?'مستحق للمراجعة':'مراجعتها '+fdate(e.st.due)}</div></div><div style="display:flex;gap:6px;flex:none"><button class="ib" data-pe="${esc(e.id)}">تعديل</button><button class="ib del" data-pd="${esc(e.id)}">حذف</button></div></div>`).join(''):'<div class="empty">اضغط «سؤال جديد» لتكتب أول سؤال لك.</div>'}
-  <p class="note">أسئلتك خاصة بك وحدك ومحفوظة على حسابك. نص فقط بدون صور. الحد الأقصى ${ar(PQ_MAX)} سؤال.</p>`;
+  ${list.length?list.map(e=>`<div class="item" style="--sc:#1F5FBF"><div class="grow"><div class="qt" dir="${dirOf(e.q)}">${esc(pqCut(e.q,140))}</div><div class="sub">${e.k==='f'?'بطاقة · ':'سؤال · '}${pqDue(e,now)?'مستحق للمراجعة':'مراجعتها '+fdate(e.st.due)}</div></div><div style="display:flex;gap:6px;flex:none"><button class="ib" data-pe="${esc(e.id)}">تعديل</button><button class="ib del" data-pd="${esc(e.id)}">حذف</button></div></div>`).join(''):'<div class="empty">اضغط «سؤال جديد» أو «بطاقة جديدة» لتبدأ.</div>'}
+  <p class="note">أسئلتك خاصة بك وحدك ومحفوظة على حسابك. نص فقط بدون صور (بطاقة أمامية وخلفية أو سؤال اختيارات). الحد الأقصى ${ar(PQ_MAX)} سؤال.</p>`;
   $('pqb').onclick=home;
   $('pqadd').onclick=()=>pqForm(sp,null);
+  $('pqaddf').onclick=()=>pqForm(sp,null,'f');
   $('pqgo').onclick=()=>pqStart(sp);
   app.querySelectorAll('[data-pe]').forEach(b=>b.onclick=()=>pqForm(sp,b.dataset.pe));
   app.querySelectorAll('[data-pd]').forEach(b=>b.onclick=async()=>{
@@ -1529,21 +1530,21 @@ function pqScreen(sp){
   });
   window.scrollTo(0,0);
 }
-function pqForm(sp,id,again){
-  const e=id?PQ.q[id]:null;
+function pqForm(sp,id,kind){
+  const e=id?PQ.q[id]:null;const isF=e?e.k==='f':kind==='f';
   if(!e&&pqLive().length>=PQ_MAX){toast('وصلت للحد الأقصى ('+ar(PQ_MAX)+' سؤال). احذف بعض الأسئلة لإضافة غيرها.');return}
-  const o=e?e.o.slice():['','','',''];while(o.length<4)o.push('');
+  const o=e&&e.o?e.o.slice():['','','',''];while(o.length<4)o.push('');
   const orow=i=>`<div class="orow" id="pqr${i}"><input type="radio" name="pqa" value="${i}" aria-label="الجواب الصحيح ${LET[i]}" ${(e?e.a:0)===i?'checked':''}><span class="l">${LET[i]}</span><input class="in" id="pqo${i}" dir="auto" maxlength="${PQ_OL}" value="${esc(o[i])}"></div>`;
-  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>${e?'تعديل السؤال':'سؤال جديد'}</h2>
-    <label class="fld"><span>نص السؤال</span><textarea class="in" id="pqq" dir="auto" maxlength="${PQ_QL}" style="min-height:110px">${esc(e?e.q:'')}</textarea></label>
-    <div class="fld"><span>الخيارات، واختر الجواب الصحيح بالدائرة</span><div id="pqos">${[0,1,2,3].map(orow).join('')}${o.length>4?[4,5].filter(i=>i<o.length).map(orow).join(''):''}</div>
-      <button class="btn line block" type="button" id="pqmore" style="${o.length>=6?'display:none':''}">+ خيار إضافي</button></div>
-    <label class="fld"><span>الشرح (اختياري)</span><textarea class="in" id="pqe" dir="auto" maxlength="${PQ_EL}" style="min-height:90px">${esc(e?e.e:'')}</textarea></label>
+  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>${isF?(e?'تعديل البطاقة':'بطاقة جديدة'):(e?'تعديل السؤال':'سؤال جديد')}</h2>
+    <label class="fld"><span>${isF?'الوجه الأمامي (السؤال)':'نص السؤال'}</span><textarea class="in" id="pqq" dir="auto" maxlength="${PQ_QL}" style="min-height:110px">${esc(e?e.q:'')}</textarea></label>
+    ${isF?`<label class="fld"><span>الوجه الخلفي (الجواب)</span><textarea class="in" id="pqb2" dir="auto" maxlength="${PQ_EL}" style="min-height:110px">${esc(e?e.b:'')}</textarea></label>`:`<div class="fld"><span>الخيارات، واختر الجواب الصحيح بالدائرة</span><div id="pqos">${[0,1,2,3].map(orow).join('')}${o.length>4?[4,5].filter(i=>i<o.length).map(orow).join(''):''}</div>
+      <button class="btn line block" type="button" id="pqmore" style="${o.length>=6?'display:none':''}">+ خيار إضافي</button></div>`}
+    <label class="fld"><span>${isF?'ملاحظة (اختياري)':'الشرح (اختياري)'}</span><textarea class="in" id="pqe" dir="auto" maxlength="${PQ_EL}" style="min-height:90px">${esc(e?e.e:'')}</textarea></label>
     <p class="err" id="er" role="alert"></p>
     <div class="r2"><button class="btn" id="pqsv">حفظ</button>${e?'':'<button class="btn line" id="pqsv2">حفظ وإضافة آخر</button>'}</div>`);
   $('cl').onclick=closeModal;
   let n=Math.max(4,o.length);
-  $('pqmore').onclick=()=>{
+  if(!isF)$('pqmore').onclick=()=>{
     if(n>=6)return;
     $('pqos').insertAdjacentHTML('beforeend',orow(n));n++;
     if(n>=6)$('pqmore').style.display='none';
@@ -1551,6 +1552,17 @@ function pqForm(sp,id,again){
   const submit=again=>{
     const text=$('pqq').value.trim();
     if(!text){$('er').textContent='اكتب نص السؤال.';return}
+    if(isF){
+      const back=$('pqb2').value.trim();
+      if(!back){$('er').textContent='اكتب الوجه الخلفي (الجواب).';return}
+      if(!e&&pqLive().length>=PQ_MAX){$('er').textContent='وصلت للحد الأقصى من الأسئلة.';return}
+      const now=Date.now(),nid=e?e.id:'p'+now.toString(36)+Math.random().toString(36).slice(2,7);
+      const it={id:nid,sp:sp,k:'f',q:text,b:back,e:$('pqe').value.trim(),t:e?e.t:now,u:now};
+      if(e&&e.st)it.st=e.st;
+      PQ.q[nid]=it;touchPQ();toast('تم حفظ البطاقة');
+      if(again){pqScreen(sp);pqForm(sp,null,'f')}else{closeModal();pqScreen(sp)}
+      return;
+    }
     const picked=+(document.querySelector('input[name=pqa]:checked')||{value:0}).value;
     const opts=[];let a=-1;
     for(let i=0;i<n;i++){const t=$('pqo'+i).value.trim();if(t){if(i===picked)a=opts.length;opts.push(t)}}
@@ -1588,11 +1600,29 @@ function pqCard(){
   <div class="scene" style="--sc:#1F5FBF"><div class="card"><section class="face front" aria-label="السؤال">
     <div class="tags"><span class="tag s">أسئلتي الخاصة</span><span class="tag">${esc(spById(PS.sp).n)}</span></div>
     <p class="q" dir="${dirOf(e.q)}">${fmt(e.q)}</p>
-    <ul class="opts">${e.o.map((t,i)=>`<li><button class="opt" dir="${dirOf(t)}" data-i="${i}"><span class="l">${LET[i]}</span><span class="t">${esc(t)}</span></button></li>`).join('')}</ul>
+    ${e.k==='f'?'<button class="btn block" id="pqshow">إظهار الجواب</button>':`<ul class="opts">${e.o.map((t,i)=>`<li><button class="opt" dir="${dirOf(t)}" data-i="${i}"><span class="l">${LET[i]}</span><span class="t">${esc(t)}</span></button></li>`).join('')}</ul>`}
   </section></div></div>`;
   $('pqx').onclick=()=>pqScreen(PS.sp);
   app.querySelectorAll('.opt').forEach(b=>b.onclick=()=>pqPick(+b.dataset.i));
+  const sh=$('pqshow');if(sh)sh.onclick=()=>pqFlip(e);
   window.scrollTo(0,0);
+}
+function pqFlip(e){
+  app.querySelector('.face').innerHTML=`<div class="tags"><span class="tag s">أسئلتي الخاصة</span><span class="tag">${esc(spById(PS.sp).n)}</span></div>
+    <p class="q" dir="${dirOf(e.q)}">${fmt(e.q)}</p>
+    <div class="exp" dir="${dirOf(e.b)}"><b>الجواب</b>${fmt(e.b)}</div>
+    ${e.e?`<div class="exp" dir="${dirOf(e.e)}"><b>ملاحظة</b>${fmt(e.e)}</div>`:''}
+    <div class="r2"><button class="btn line" data-g="1">نسيتها</button><button class="btn line" data-g="2">صعبة</button></div>
+    <div class="r2"><button class="btn" data-g="3">جيدة</button><button class="btn" data-g="4">سهلة</button></div>`;
+  app.querySelectorAll('[data-g]').forEach(b=>b.onclick=()=>pqGrade(e,+b.dataset.g));
+}
+function pqGrade(e,g){
+  if(PS.done===e.id+PS.i)return;PS.done=e.id+PS.i;
+  const now=Date.now(),ok=g>=3;
+  e.st=fsrsApply(Object.assign({},e.st||{}),g,now);e.u=now;touchPQ();
+  PS.n++;if(ok)PS.ok++;
+  if(!ok&&!PS.rq[e.id]){PS.rq[e.id]=1;PS.Q.push(e.id)}
+  PS.i++;pqCard();
 }
 function pqPick(i){
   const e=PQ.q[PS.Q[PS.i]];if(!e||PS.done===e.id+PS.i)return;
