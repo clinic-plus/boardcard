@@ -173,6 +173,9 @@ button.pill:active,.ib:active,.back:active,.x:active{transform:scale(.92)}
 .tag{font-size:13px;font-weight:600;border-radius:999px;padding:1px 12px;background:var(--chip);color:var(--muted)}
 .tag.s{background:var(--sc);color:#fff}
 .q{font-size:var(--qfs,21px);font-weight:600;line-height:1.7;margin:0 0 16px;unicode-bidi:plaintext}
+.qimg{display:block;max-width:100%;max-height:min(60vh,420px);margin:0 auto 16px;border-radius:12px;object-fit:contain;background:#fff;cursor:zoom-in}
+.zoomv{position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.88);display:flex;align-items:center;justify-content:center;padding:12px;cursor:zoom-out}
+.zoomv img{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;background:#fff}
 .opts{list-style:none;margin:0 0 12px;padding:0;display:grid;gap:8px}
 .opt{display:flex;align-items:center;gap:12px;width:100%;text-align:start;border:1px solid var(--fbrd);background:var(--field);border-radius:16px;padding:10px 12px;min-height:50px}
 .opt:active{transform:scale(.97)}
@@ -768,6 +771,9 @@ async function hydrate(ents,onFetch){
   return ents.map(e=>Store.qmap[e.id]).filter(c=>c&&Array.isArray(c.o));
 }
 // سؤال وصل من دالة أخرى (تحدي اليوم، تحدي زميل): نستعمل نسخة الذاكرة إن وُجدت، ولا نُبقي معه جواباً
+const IMG_BASE='https://img.boardcard.net/';
+const imgHtml=c=>c&&typeof c.img==='string'&&/^q\/\d{6}\/[a-f0-9]{16}\.(webp|jpg)$/.test(c.img)?`<img class="qimg" src="${IMG_BASE+c.img}" alt="صورة السؤال" loading="lazy" decoding="async">`:'';
+document.addEventListener('click',e=>{const t=e.target;if(!t||!t.classList||!t.classList.contains('qimg'))return;const v=document.createElement('div');v.className='zoomv';v.innerHTML='<img alt="">';v.firstChild.src=t.src;v.onclick=()=>v.remove();document.body.appendChild(v)});
 const memQ=q=>{const m=Store.qmap[q.id];if(m&&Array.isArray(m.o))return m;const x=Object.assign({},q);delete x.a;delete x.e;return x};
 const canQ=c=>!!(Store.isAdmin||c.free||(Store.user&&Store.subs[qSp(c)]));
 // الجواب والشرح: يطلبهما التطبيق من السيرفر بعد أن يجيب الطالب، ويبقيان في الذاكرة المؤقتة فقط
@@ -1727,7 +1733,7 @@ function dqShow(){
     <span class="pill"><bdi dir="ltr">${ar(D.i+1)} / ${ar(n)}</bdi></span></div>
   <div class="scene" style="--sc:${safeC(sub.c)}"><div class="card"><section class="face front" aria-label="السؤال">
     <div class="tags"><span class="tag s">${esc(D.label||'🎯 تحدي اليوم')}</span><span class="tag">${esc(sub.n)}</span></div>
-    <p class="q" dir="${dirOf(c.q)}">${fmt(c.q)}</p>${optsHtml('front')}${aiPreHtml(c)}
+    <p class="q" dir="${dirOf(c.q)}">${fmt(c.q)}</p>${imgHtml(c)}${optsHtml('front')}${aiPreHtml(c)}
   </section></div></div>`;
   bindAiPre(c);
   $('dqx').onclick=home;
@@ -1758,7 +1764,7 @@ async function dqAns(i){
   dqRecord(c,ok,sec);if(D.kind==='dq')dqSave(false);
   const last=D.i+1>=D.qs.length,acc=canQ(c),face=app.querySelector('.face');
   if(acc&&!Store.qmap[c.id])Store.qmap[c.id]=c;   // لتعمل أدوات السؤال (حفظ، ملاحظة، إبلاغ، شرح)
-  face.innerHTML=tagsHtml(1)+`<p class="q" dir="${dirOf(c.q)}">${acc?hlHtml(c,'q'):fmt(c.q)}</p>`+(acc?toolsHtml(c):'')+
+  face.innerHTML=tagsHtml(1)+`<p class="q" dir="${dirOf(c.q)}">${acc?hlHtml(c,'q'):fmt(c.q)}</p>${imgHtml(c)}`+(acc?toolsHtml(c):'')+
     `<p class="res ${ok?'ok':'no'}">${ok?'جوابك صحيح':'الجواب خاطئ'}</p>`+optsHtml('back',i)+dqExp(c,acc)+
     `<button class="btn block" id="dqn">${last?'عرض النتيجة':'السؤال التالي'}</button>`;
   bindStars();bindAi();bindTools();bindReports();choiceFill(c);
@@ -1999,7 +2005,7 @@ function liveShow(){
   app.innerHTML=`<div class="sbar"><span class="pill"><bdi dir="ltr">${ar(LR.k+1)} / ${ar(n)}</bdi></span><span class="pill xtm${left<=60?' low':''}" id="lvt">${mmss(left)}</span><button class="btn xfin" id="lvf">إنهاء</button></div>
   <div class="scene" style="--sc:${safeC(sub.c)}"><div class="card"><section class="face front" aria-label="السؤال">
     <div class="tags"><span class="tag s">🔴 امتحان حي</span><span class="tag">${esc(sub.n)}</span></div>
-    <p class="q" dir="${dirOf(c.q)}">${fmt(c.q)}</p>
+    <p class="q" dir="${dirOf(c.q)}">${fmt(c.q)}</p>${imgHtml(c)}
     <ul class="opts">${c.o.map((t,i)=>`<li><button class="opt${LR.ans[LR.k]===i?' sel':''}" dir="${dirOf(t)}" data-i="${i}"><span class="l">${LET[i]}</span><span class="t">${esc(t)}</span></button></li>`).join('')}</ul>
     <div class="r2"><button class="btn line" id="lvp"${LR.k?'':' disabled'}>السابق</button><button class="btn line" id="lvn2"${LR.k+1<n?'':' disabled'}>التالي</button></div>
   </section></div></div>`;
@@ -2624,7 +2630,7 @@ function showCard(){
   <div class="tbar" id="tb" ${S.timer?'':'hidden'}><i id="ti"></i></div>
   <div class="scene" style="--sc:${safeC(sub.c)}"><div class="card" id="card">
     <section class="face front" aria-label="السؤال">${tagsHtml(1)}
-      <p class="q" dir="${dirOf(cur.q)}">${hlHtml(cur,'q')}</p>${toolsHtml(cur)}${optsHtml('front')}
+      <p class="q" dir="${dirOf(cur.q)}">${hlHtml(cur,'q')}</p>${imgHtml(cur)}${toolsHtml(cur)}${optsHtml('front')}
       <button class="btn line block" id="rv">اعرض الجواب</button>${aiPreHtml(cur)}
     </section>
     <section class="face back" aria-live="polite" id="backf"></section>
@@ -2637,7 +2643,7 @@ function showCard(){
   if(S.timer)startTimer();
 }
 function flip(html){
-  $('backf').innerHTML=tagsHtml(1)+`<p class="q" dir="${dirOf(cur.q)}">${hlHtml(cur,'q')}</p>`+toolsHtml(cur)+html;
+  $('backf').innerHTML=tagsHtml(1)+`<p class="q" dir="${dirOf(cur.q)}">${hlHtml(cur,'q')}</p>${imgHtml(cur)}`+toolsHtml(cur)+html;
   $('card').classList.add('flipped');
   bindStars();bindReports();bindAi();bindTools();
   choiceFill(cur);
