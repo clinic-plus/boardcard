@@ -138,7 +138,7 @@ async function adminR2(req, env, url) {
   if (url.pathname === '/api/admin/list') {
     const l = await bucket.list({ limit: 1000, cursor: url.searchParams.get('cursor') || undefined });
     return json({
-      objects: l.objects.map(o => ({ key: o.key, size: o.size })),
+      objects: l.objects.map(o => ({ key: o.key, size: o.size, at: o.uploaded ? new Date(o.uploaded).getTime() : 0 })),
       cursor: l.truncated ? l.cursor : null
     });
   }

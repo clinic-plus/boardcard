@@ -548,7 +548,7 @@ function admin(){
   }else if(A.tab==='questions'){
     body=`<div class="item" id="usage" style="--sc:#1A56B0;display:block"><div class="sub">جارٍ حساب استهلاك القاعدة…</div></div>
       <div class="r2" style="margin-top:12px"><button class="btn" id="addQ">+ سؤال جديد</button><button class="btn line" id="bulk">إضافة جماعية</button></div>
-      <div class="r2" style="margin-top:8px"><button class="btn line" id="bkc">تصدير Excel (CSV)</button><button class="btn line" id="r2st">📊 الاستهلاك</button></div>
+      <div class="r2" style="margin-top:8px"><button class="btn line" id="bkc">تصدير Excel (CSV)</button><button class="btn line" id="r2st">📊 الاستهلاك</button><button class="btn line" id="r2cl">🧹 تنظيف</button></div>
       <button class="btn block" id="bkf" style="margin-top:8px">⬇ نسخة احتياطية شاملة (كل شيء)</button>
       <div id="r2box" class="hint" style="margin-top:8px"></div>
       <div id="bkinfo" class="hint" style="margin-top:8px"></div>
@@ -640,6 +640,7 @@ function admin(){
     $('bkc').onclick=()=>exportBackup('csv');
     $('bkf').onclick=fullBackup;
     $('r2st').onclick=showUsage;
+    $('r2cl').onclick=cleanR2;
     loadBackupInfo();
     $('fs').onchange=e=>{A.fs=e.target.value;qList()};
     $('fq').oninput=e=>{A.fq=e.target.value.trim();clearTimeout(qList.t);qList.t=setTimeout(qList,300)};
@@ -956,6 +957,37 @@ function downloadBlob(name,blob){
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;
   document.body.appendChild(a);a.click();
   setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},60000);
+}
+/* تنظيف: صور لا يستعملها أي سؤال (ولا سلة المحذوفات) + ملفات طلاب لم يعد لهم حساب */
+async function cleanR2(){
+  const say=t=>{const e=$('r2box');if(e)e.textContent=t};
+  try{
+    say('جارٍ فحص الصور وملفات الطلاب…');
+    const [im,us]=await Promise.all([r2ListAll('img'),r2ListAll('user')]);
+    const rf=await sb.rpc('admin_orphan_refs');
+    if(rf.error||!rf.data)throw rf.error||new Error('تعذر قراءة المراجع.');
+    const used=new Set(rf.data.imgs||[]),uids=new Set((rf.data.uids||[]).map(x=>String(x).toLowerCase()));
+    const dayAgo=Date.now()-36e5;
+    const oi=im.filter(o=>!used.has(o.key)&&o.at&&o.at<dayAgo);
+    const stale=new Set((rf.data.stale||[]).map(x=>String(x).toLowerCase()));
+    const ou=new Set(),st=new Set();let ub=0,sb2=0;
+    us.forEach(o=>{const u=o.key.split('/')[1];if(!u)return;const l=u.toLowerCase();
+      if(!uids.has(l)){ou.add(u);ub+=o.size}
+      else if(stale.has(l)){st.add(u);sb2+=o.size}});
+    const ib=oi.reduce((a,o)=>a+o.size,0);
+    if(!oi.length&&!ou.size&&!st.size){say('لا يوجد شيء للتنظيف. كل الصور مستعملة، ولا ملفات لطلاب محذوفين أو انتهى اشتراكهم قبل أكثر من سنة.');return}
+    const ok=await askConfirm('تنظيف R2','سيُحذف نهائياً: '+ar(oi.length)+' صورة يتيمة (<bdi>'+ar(mbs(ib))+' MB</bdi>) وملفات '+ar(ou.size)+' طالب محذوف (<bdi>'+ar(mbs(ub))+' MB</bdi>) وملفات '+ar(st.size)+' طالب انتهى اشتراكه قبل أكثر من سنة (<bdi>'+ar(mbs(sb2))+' MB</bdi>، يبقى حسابهم ويُحذف فقط ملاحظاتهم وأسئلتهم الخاصة). الصور الأحدث من ساعة وصور سلة المحذوفات لا تُمس. أنصحك بتنزيل نسخة شاملة قبل التنظيف. تتابع؟'.replace(/<\/?bdi[^>]*>/g,''),'احذف');
+    if(!ok){say('');return}
+    let di=0,du=0,fail=0;
+    for(const o of oi){
+      try{await imgCall('DELETE',IMG_API+'?path='+encodeURIComponent(o.key));di++}catch(e){fail++}
+      if((di+fail)%20===0)say('جارٍ الحذف… '+ar(di+fail)+' من '+ar(oi.length));
+    }
+    for(const u of [...ou,...st]){
+      try{await imgCall('DELETE','/api/data?uid='+encodeURIComponent(u));du++}catch(e){fail++}
+    }
+    say('تم حذف '+ar(di)+' صورة يتيمة وملفات '+ar(du)+' طالب (محذوف أو منتهٍ اشتراكه منذ أكثر من سنة)'+(fail?'، وفشل '+ar(fail)+' (أعد المحاولة)':'')+'.');
+  }catch(e){say(e.message||errMsg(e))}
 }
 async function fullBackup(){
   const el=$('r2box'),say=t=>{const e=$('r2box');if(e)e.textContent=t};
