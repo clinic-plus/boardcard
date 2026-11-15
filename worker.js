@@ -6,7 +6,8 @@ const PATH_RE = /^q\/\d{6}\/[a-f0-9]{16}\.(webp|jpg)$/;
 // Student data (gzip JSON), private bucket. Limits are measured on the gzip bytes.
 const KINDS = {
   notes: { file: 'notes.json.gz', max: 1800000 },
-  pq: { file: 'questions.json.gz', max: 1500000 }
+  pq: { file: 'questions.json.gz', max: 1500000 },
+  progress: { file: 'progress.json.gz', max: 3000000 }
 };
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -93,7 +94,7 @@ async function img(req, env, url) {
 
 
 async function data(req, env, url) {
-  const m = /^\/api\/data\/(notes|pq)$/.exec(url.pathname);
+  const m = /^\/api\/data\/(notes|pq|progress)$/.exec(url.pathname);
   if (m) {
     const k = KINDS[m[1]];
     const me = await whoami(req);
@@ -122,7 +123,9 @@ async function data(req, env, url) {
     const uid = url.searchParams.get('uid') || '';
     if (!UUID_RE.test(uid)) return json({ error: 'bad_uid' }, 400);
     const l = await env.USERDATA.list({ prefix: 'users/' + uid.toLowerCase() + '/' });
-    const keys = l.objects.map(o => o.key);
+    // keep=progress: remove only notes and personal questions, keep the study progress
+    const keepProg = url.searchParams.get('keep') === 'progress';
+    const keys = l.objects.map(o => o.key).filter(k => !(keepProg && /\/progress\.json\.gz$/.test(k)));
     if (keys.length) await env.USERDATA.delete(keys);
     return json({ ok: true, deleted: keys.length });
   }
@@ -144,7 +147,7 @@ async function adminR2(req, env, url) {
   }
   if (url.pathname === '/api/admin/get') {
     const key = url.searchParams.get('key') || '';
-    const okKey = b === 'img' ? PATH_RE.test(key) : /^users\/[0-9a-f-]{36}\/(notes|questions)\.json\.gz$/i.test(key);
+    const okKey = b === 'img' ? PATH_RE.test(key) : /^users\/[0-9a-f-]{36}\/(notes|questions|progress)\.json\.gz$/i.test(key);
     if (!okKey) return json({ error: 'bad_key' }, 400);
     const o = await bucket.get(key);
     if (!o) return json({ error: 'none' }, 404);
@@ -153,11 +156,52 @@ async function adminR2(req, env, url) {
   return json({ error: 'not_found' }, 404);
 }
 
+// Usage metrics from the Cloudflare GraphQL API. Needs the secret CF_API_TOKEN (Account Analytics: Read).
+const CLASS_A = ['ListBuckets','PutBucket','ListObjects','ListObjectsV2','PutObject','CopyObject','CompleteMultipartUpload','CreateMultipartUpload','ListMultipartUploads','UploadPart','UploadPartCopy','PutBucketEncryption','PutBucketCors','PutBucketLifecycleConfiguration','LifecycleStorageTierTransition'];
+async function metrics(req, env) {
+  if (!(await isAdmin(req))) return json({ error: 'forbidden' }, 403);
+  if (!env.CF_API_TOKEN) return json({ error: 'no_token' });
+  const h = { Authorization: 'Bearer ' + env.CF_API_TOKEN, 'Content-Type': 'application/json' };
+  try {
+    let acc = env.CF_ACCOUNT_ID;
+    if (!acc) {
+      const r = await fetch('https://api.cloudflare.com/client/v4/accounts', { headers: h });
+      const j = await r.json();
+      acc = j && j.result && j.result[0] && j.result[0].id;
+      if (!acc) return json({ error: 'no_account', detail: 'أضف CF_ACCOUNT_ID كمتغير في الـ Worker' });
+    }
+    const now = new Date();
+    const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+    const month = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+    const q = `query($acc:String!,$day:Time!,$month:Time!,$now:Time!){viewer{accounts(filter:{accountTag:$acc}){
+      w:workersInvocationsAdaptive(limit:1000,filter:{datetime_geq:$day,datetime_leq:$now}){sum{requests errors}}
+      r:r2OperationsAdaptiveGroups(limit:1000,filter:{datetime_geq:$month,datetime_leq:$now}){dimensions{actionType} sum{requests}}
+    }}}`;
+    const r = await fetch('https://api.cloudflare.com/client/v4/graphql', {
+      method: 'POST', headers: h,
+      body: JSON.stringify({ query: q, variables: { acc: acc, day: day, month: month, now: now.toISOString() } })
+    });
+    const j = await r.json();
+    const a = j && j.data && j.data.viewer && j.data.viewer.accounts && j.data.viewer.accounts[0];
+    if (!a) return json({ error: 'cf', detail: JSON.stringify(j && (j.errors || j)).slice(0, 300) });
+    let req_day = 0, err_day = 0, A = 0, B = 0;
+    (a.w || []).forEach(x => { req_day += x.sum.requests || 0; err_day += x.sum.errors || 0; });
+    (a.r || []).forEach(x => {
+      const n = x.sum.requests || 0, t = x.dimensions.actionType;
+      if (CLASS_A.indexOf(t) >= 0) A += n; else if (/^Delete/.test(t)) return; else B += n;
+    });
+    return json({ workers_today: req_day, workers_errors: err_day, r2_class_a: A, r2_class_b: B });
+  } catch (e) {
+    return json({ error: 'cf', detail: String(e).slice(0, 200) });
+  }
+}
+
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
     if (url.pathname === '/api/img') return img(req, env, url);
     if (url.pathname === '/api/data' || url.pathname.startsWith('/api/data/')) return data(req, env, url);
+    if (url.pathname === '/api/admin/metrics') return metrics(req, env);
     if (url.pathname === '/api/admin/list' || url.pathname === '/api/admin/get') return adminR2(req, env, url);
     if (url.pathname.startsWith('/api/')) return json({ error: 'not_found' }, 404);
     return env.ASSETS.fetch(req);

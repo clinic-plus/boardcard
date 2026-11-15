@@ -203,6 +203,31 @@ textarea.in{min-height:84px;resize:vertical}
 .cl:active{transform:scale(.85)}
 .cl[aria-pressed="true"]{box-shadow:0 0 0 3px var(--ink);transform:scale(1.1)}
 .hint{font-size:13px;color:var(--muted);margin:0 0 12px}
+.uv{--s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--s4:#eda100}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .uv{--s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#c98500}}
+:root[data-theme="dark"] .uv{--s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#c98500}
+.uv .card{background:var(--glass);border:1px solid var(--glass-brd);box-shadow:var(--glass-sh);border-radius:18px;padding:14px;margin:0 0 12px}
+.uv h3{font-size:15px;margin:0 0 2px}
+.uv .cap{font-size:12px;color:var(--muted);margin:0 0 10px}
+.uv h4{font-size:13px;margin:14px 0 4px;color:var(--ink)}
+.uv .uvh{display:flex;justify-content:space-between;gap:8px;align-items:baseline;font-size:13px;margin:0 0 6px}
+.uv .meter{height:10px;background:var(--chip);border-radius:6px;overflow:hidden}
+.uv .meter i{display:block;height:100%;border-radius:6px;background:var(--mc,var(--s1))}
+.uv .st{font-size:12px;color:var(--muted);margin-top:5px}
+.uv .rk{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 10px;padding:6px 0;cursor:default}
+.uv .rk .nm{font-size:13px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.uv .rk .v{font-size:12px;color:var(--muted);white-space:nowrap}
+.uv .rk .tr{grid-column:1/-1;height:8px;background:var(--chip);border-radius:4px;overflow:hidden}
+.uv .rk .tr i{display:block;height:100%;background:var(--s1);border-radius:4px}
+.uv .rk .sb{grid-column:1/-1;font-size:11px;color:var(--muted)}
+.uv .sgb{display:flex;gap:2px;height:14px;border-radius:7px;overflow:hidden;margin:6px 0 10px}
+.uv .sgb i{display:block;min-width:3px;height:100%}
+.uv .lg{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:6px 8px;align-items:center;font-size:13px;padding:3px 0}
+.uv .lg .dt{width:10px;height:10px;border-radius:3px}
+.uv .lg .nm{min-width:0}
+.uv .lg .v{font-size:12px;color:var(--muted);white-space:nowrap}
+.uv .note{font-size:12px;color:var(--muted);margin:8px 0 0}
+.uvtip{position:fixed;z-index:60;display:none;max-width:260px;background:rgba(11,32,56,.92);color:#fff;border-radius:10px;padding:7px 10px;font-size:12px;line-height:1.6;pointer-events:none}
 .hint pre{background:var(--chip);border-radius:12px;padding:8px 12px;margin:6px 0 0;white-space:pre-wrap;font:inherit;unicode-bidi:plaintext}
 .toast{position:fixed;inset-inline:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));max-width:420px;margin:auto;background:rgba(11,32,56,.82);-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);color:#fff;border:1px solid rgba(255,255,255,.18);padding:12px 16px;border-radius:18px;z-index:30;text-align:center;animation:rise .4s var(--spring)}
 
@@ -550,6 +575,7 @@ function admin(){
       <div class="r2" style="margin-top:12px"><button class="btn" id="addQ">+ سؤال جديد</button><button class="btn line" id="bulk">إضافة جماعية</button></div>
       <div class="r2" style="margin-top:8px"><button class="btn line" id="bkc">تصدير Excel (CSV)</button><button class="btn line" id="r2st">📊 الاستهلاك</button><button class="btn line" id="r2cl">🧹 تنظيف</button></div>
       <button class="btn block" id="bkf" style="margin-top:8px">⬇ نسخة احتياطية شاملة (كل شيء)</button>
+      <button class="btn line block" id="cmtb" style="margin-top:8px">💬 التعليقات…</button>
       <div id="r2box" class="hint" style="margin-top:8px"></div>
       <div id="bkinfo" class="hint" style="margin-top:8px"></div>
       <div class="r2" style="margin:12px 0">
@@ -571,6 +597,11 @@ function admin(){
     body=seg+(A.ib==='reqs'
       ?`<div class="seg" role="group" aria-label="الحالة" style="margin-top:0"><button data-qs="new" aria-pressed="${A.qs!=='done'}">جديدة</button><button data-qs="done" aria-pressed="${A.qs==='done'}">منجزة</button></div><div id="rqlist" style="margin-top:12px"><p class="hint">جارٍ التحميل…</p></div>`
       :`<div class="seg" role="group" aria-label="الحالة" style="margin-top:0"><button data-rs="open" aria-pressed="${A.rs==='open'}">مفتوحة</button><button data-rs="resolved" aria-pressed="${A.rs==='resolved'}">تم حلها</button></div><div id="rplist"><p class="hint">جارٍ التحميل…</p></div>`);
+  }else if(A.tab==='usage'){
+    body=`<div class="uv" id="uvroot"><div class="r2" style="margin-bottom:10px"><button class="btn line" id="uvrf">⟳ تحديث</button></div>
+      <div class="card"><h3>قاعدة البيانات</h3><p class="cap">Supabase: جداول الأسئلة والحسابات وغيرها</p><div id="uvdb"><p class="hint">جارٍ القراءة…</p></div></div>
+      <div class="card"><h3>تخزين Supabase</h3><p class="cap">الأغلفة والتعليقات والملفات القديمة</p><div id="uvst"><p class="hint">جارٍ القراءة…</p></div></div>
+      <div class="card"><h3>تخزين R2</h3><p class="cap">صور الأسئلة وبيانات الطلاب (ملاحظات، أسئلة خاصة، تقدم)</p><div id="uvr2"><p class="hint">جارٍ القراءة…</p></div><div id="cfm"></div></div></div>`;
   }else if(A.tab==='stats'){
     body=`<div id="stbox"><p class="hint">جارٍ حساب الأرقام…</p></div>`;
   }else if(A.tab==='trash'){
@@ -604,6 +635,7 @@ function admin(){
     <button class="pill" id="out">تسجيل الخروج</button></div>
   <div class="seg tabs" role="group" aria-label="القسم" style="margin-top:0">
     <button data-t="stats" aria-pressed="${A.tab==='stats'}">الأرقام</button>
+    <button data-t="usage" aria-pressed="${A.tab==='usage'}">الاستهلاك</button>
     <button data-t="specs" aria-pressed="${A.tab==='specs'}">الاختصاصات</button>
     <button data-t="subjects" aria-pressed="${A.tab==='subjects'}">المواد</button>
     <button data-t="questions" aria-pressed="${A.tab==='questions'}">الأسئلة</button>
@@ -639,8 +671,9 @@ function admin(){
     $('bulk').onclick=bulkForm;
     $('bkc').onclick=()=>exportBackup('csv');
     $('bkf').onclick=fullBackup;
-    $('r2st').onclick=showUsage;
+    $('r2st').onclick=()=>{A.tab='usage';admin()};
     $('r2cl').onclick=cleanR2;
+    loadCmtState();
     loadBackupInfo();
     $('fs').onchange=e=>{A.fs=e.target.value;qList()};
     $('fq').oninput=e=>{A.fq=e.target.value.trim();clearTimeout(qList.t);qList.t=setTimeout(qList,300)};
@@ -652,6 +685,9 @@ function admin(){
     app.querySelectorAll('[data-ib]').forEach(b=>b.onclick=()=>{A.ib=b.dataset.ib;admin()});
     if(A.ib==='reqs'){app.querySelectorAll('[data-qs]').forEach(b=>b.onclick=()=>{A.qs=b.dataset.qs;admin()});loadRequests()}
     else{app.querySelectorAll('[data-rs]').forEach(b=>b.onclick=()=>{A.rs=b.dataset.rs;admin()});loadReports()}
+  }else if(A.tab==='usage'){
+    $('uvrf').onclick=()=>{loadUsageTab()};
+    loadUsageTab();
   }else if(A.tab==='stats'){
     loadStats();
   }else if(A.tab==='trash'){
@@ -894,6 +930,8 @@ async function loadBackupInfo(){
 }
 /* ---------- نسخة شاملة + مراقبة الاستهلاك (R2) ---------- */
 const R2_LIMIT_GB=10,PART_BYTES=200*1048576;
+const BK_TABLES=['leaderboard','activity_days','question_stats','league_members','challenges','challenge_results','live_exams','live_results','daily_sets','referrals','sales','partners','announcements','question_reports','question_choices','q_seen','q_quota','lb_config','lb_bots','app_config','ai_usage','ai_chat_usage','ad_stats','subject_requests','question_deletions','questions_trash','subjects_trash','ai_explanations'];
+const BK_BUCKETS=[['question-comments','comments'],['user-progress','progress'],['user-notes','legacy-notes'],['covers','covers']];
 async function r2Fetch(path){
   const s=(await sb.auth.getSession()).data.session;
   if(!s)throw new Error('انتهت الجلسة، سجّل الدخول من جديد.');
@@ -910,22 +948,126 @@ async function r2ListAll(b,prog){
   return out;
 }
 const mbs=n=>{const v=n/1048576;return v<10?v.toFixed(1):Math.round(v)};
-async function showUsage(){
-  const el=$('r2box');if(!el)return;
-  el.textContent='جارٍ قراءة الاستهلاك…';
-  try{
+async function loadCmtState(){
+  const b=$('cmtb');if(!b)return;
+  const r=await sb.rpc('admin_comments_state');
+  if(!$('cmtb'))return;
+  if(r.error){b.textContent='💬 التعليقات: تعذر قراءة الحالة';return}
+  const on=!!r.data;
+  b.textContent=on?'💬 التعليقات مفعّلة (اضغط لإيقاف الإضافة)':'💬 التعليقات موقوفة (اضغط لتفعيلها)';
+  b.onclick=async()=>{
+    const msg=on?'سيتوقف الطلاب عن إضافة تعليقات جديدة، ويبقى النقاش الموجود ظاهراً.':'سيستطيع الطلاب إضافة التعليقات من جديد.';
+    if(!(await askConfirm(on?'إيقاف التعليقات':'تفعيل التعليقات',msg,on?'أوقف':'فعّل')))return;
+    const w=await sb.rpc('admin_set_comments',{p_on:!on});
+    if(w.error){toast(errMsg(w.error));return}
+    loadCmtState();
+  };
+}
+/* ---------- تبويب الاستهلاك ---------- */
+const UV_FB=n=>{n=+n||0;if(n<1024)return Math.round(n)+' B';if(n<1048576)return (n/1024).toFixed(n<10240?1:0)+' KB';if(n<1073741824)return mbs(n)+' MB';return (n/1073741824).toFixed(2)+' GB'};
+const B=t=>`<bdi>${t}</bdi>`;
+const UV_PCT=p=>p<1?'أقل من 1':String(Math.round(p));
+const uvCol=p=>p>=80?'#C0392B':p>=60?'#B7791F':'var(--s1)';
+function uvMeter(title,used,limit,note,fmt){
+  fmt=fmt||UV_FB;const p=Math.min(100,used/limit*100);
+  const st=p>=80?'⚠ قريب جداً من الحد':p>=60?'⚠ اقتربت من الحد':'';
+  const tip=`${title}: ${fmt(used)} من ${fmt(limit)} (${UV_PCT(p)}%)`;
+  return `<div style="margin:10px 0" data-tip="${esc(tip)}"><div class="uvh"><b>${esc(title)}</b><span><bdi>${fmt(used)}</bdi> من <bdi>${fmt(limit)}</bdi></span></div>
+    <div class="meter" role="img" aria-label="${esc(tip)}"><i style="width:${Math.max(p,.8).toFixed(1)}%;--mc:${uvCol(p)}"></i></div>
+    <div class="st">${ar(UV_PCT(p))}%${st?' · '+st:''}${note?' · '+note:''}</div></div>`;
+}
+/* rows: [{n, sub, v, val, tip}]  v = الرقم للترتيب والطول، val = النص المعروض */
+function uvRank(rows,total){
+  const max=Math.max(1,...rows.map(r=>r.v));
+  return rows.map(r=>{
+    const pc=total>0?Math.round(r.v/total*100):0;
+    const tip=r.tip||`${r.n.replace(/<[^>]+>/g,'')}: ${r.val.replace(/<[^>]+>/g,'')}${total>0?' ('+(pc<1&&r.v>0?'أقل من 1':pc)+'%)':''}`;
+    return `<div class="rk" data-tip="${esc(tip)}"><span class="nm">${r.n}</span><span class="v"><bdi>${r.val}</bdi>${total>0?' · '+(pc<1&&r.v>0?'<bdi dir="ltr">&lt;1%</bdi>':ar(pc)+'%'):''}</span>
+      <div class="tr"><i style="width:${r.v>0?Math.max(r.v/max*100,1.5).toFixed(1):0}%"></i></div>${r.sub?`<span class="sb">${r.sub}</span>`:''}</div>`}).join('');
+}
+function uvSeg(parts){
+  const tot=parts.reduce((a,p)=>a+p.v,0)||1;
+  const bar=parts.filter(p=>p.v>0).map(p=>`<i data-tip="${esc(p.n+': '+UV_FB(p.v)+' ('+Math.round(p.v/tot*100)+'%)')}" style="flex:${p.v} 1 0;background:var(--s${p.s})"></i>`).join('');
+  const lg=parts.map(p=>`<div class="lg" data-tip="${esc(p.n+': '+UV_FB(p.v)+' ('+Math.round(p.v/tot*100)+'%)')}"><span class="dt" style="background:var(--s${p.s})"></span><span class="nm">${p.n}${p.sub?` <span class="v">${p.sub}</span>`:''}</span><span class="v"><bdi>${UV_FB(p.v)}</bdi> · ${ar(Math.round(p.v/tot*100))}%</span></div>`).join('');
+  return `<div class="sgb" role="img" aria-label="توزيع المساحة">${bar}</div>${lg}`;
+}
+function uvTipInit(root){
+  let tip=$('uvtip');if(!tip){tip=document.createElement('div');tip.id='uvtip';tip.className='uvtip';document.body.appendChild(tip)}
+  tip.style.display='none';
+  const show=(el,x,y)=>{tip.textContent=el.dataset.tip;tip.style.display='block';const w=tip.offsetWidth;tip.style.left=Math.min(Math.max(8,x-w/2),innerWidth-w-8)+'px';tip.style.top=Math.max(8,y-tip.offsetHeight-14)+'px'};
+  root.addEventListener('pointermove',e=>{if(e.pointerType==='touch')return;const t=e.target.closest('[data-tip]');if(t)show(t,e.clientX,e.clientY);else tip.style.display='none'});
+  root.addEventListener('pointerleave',()=>{tip.style.display='none'});
+  root.addEventListener('click',e=>{const t=e.target.closest('[data-tip]');if(!t){tip.style.display='none';return}show(t,e.clientX,e.clientY);clearTimeout(tip._t);tip._t=setTimeout(()=>{tip.style.display='none'},3500)});
+}
+const UV_TABLES={questions:'الأسئلة',profiles:'حسابات الطلاب',subscriptions:'الاشتراكات',questions_trash:'سلة المحذوفات',question_stats:'إحصائيات الأسئلة',activity_days:'أيام النشاط',leaderboard:'لوحة الصدارة',question_comment_counts:'عدّاد التعليقات',comment_usage:'استخدام التعليقات',question_reports:'التبليغات',sales:'المبيعات',codes:'الأكواد',announcements:'الإعلانات',question_choices:'اختيارات الأسئلة',referrals:'الإحالات'};
+const UV_BUCKETS={'user-progress':'تقدم الطلاب (النظام القديم)','user-notes':'ملاحظات قديمة','covers':'أغلفة المواد','question-comments':'تعليقات الأسئلة','request-files':'مرفقات الطلبات'};
+async function loadUsageTab(){
+  const root=$('uvroot');if(!root)return;
+  uvTipInit(root);
+  const set=(id,h)=>{const e=$(id);if(e)e.innerHTML=h};
+  const fail=(id,t)=>set(id,`<p class="hint">${t}</p>`);
+  /* 1) قاعدة البيانات */
+  (async()=>{try{
+    const [u,b]=await Promise.all([sb.rpc('admin_db_usage'),sb.rpc('admin_db_breakdown')]);
+    if(u.error)throw u.error;if(b.error)throw b.error;
+    const d=Array.isArray(u.data)?u.data[0]:u.data,total=Number(d.db_bytes),lim=DB_LIMIT_MB*1048576;
+    const tb=(b.data||[]).map(r=>({name:r.name,bytes:Number(r.bytes),n:Number(r.n)})).filter(r=>r.bytes>0);
+    const pub=tb.reduce((a,r)=>a+r.bytes,0),sys=Math.max(0,total-pub);
+    let rows=tb.map(r=>({n:esc(UV_TABLES[r.name]||r.name),sub:`${B(esc(r.name))} · نحو ${B(r.n.toLocaleString('en-US'))} صف`,v:r.bytes,val:UV_FB(r.bytes)}));
+    if(sys>0)rows.push({n:'نظام Supabase (المصادقة والفهارس وغيرها)',v:sys,val:UV_FB(sys)});
+    rows.sort((x,y)=>y.v-x.v);
+    if(rows.length>9){const rest=rows.slice(9),rv=rest.reduce((a,r)=>a+r.v,0);rows=rows.slice(0,9);rows.push({n:`أخرى (${B(rest.length)} بنود)`,v:rv,val:UV_FB(rv),tip:'أخرى: '+rest.map(r=>r.n.replace(/<[^>]+>/g,'')).join('، ')})}
+    set('uvdb',uvMeter('المستهلك من القاعدة',total,lim,'الحد المجاني '+B('500 MB'))+`<h4>توزيع الحجم حسب الجدول</h4>`+uvRank(rows,total)+(total/lim>=.6?'<p class="note">اقتربت من الحد: فكّر بنقل المواد القديمة أو حذف ما لا تحتاجه.</p>':''));
+  }catch(e){fail('uvdb','تعذر قراءة استهلاك القاعدة.')}})();
+  /* 2) تخزين Supabase */
+  (async()=>{try{
+    const r=await sb.rpc('admin_storage_summary');if(r.error)throw r.error;
+    const bk=(r.data||[]).map(x=>({id:x.bucket,n:Number(x.n),bytes:Number(x.bytes)})),total=bk.reduce((a,x)=>a+x.bytes,0);
+    const rows=bk.sort((x,y)=>y.bytes-x.bytes).map(x=>({n:esc(UV_BUCKETS[x.id]||x.id),sub:`${B(esc(x.id))} · ${B(x.n.toLocaleString('en-US'))} ملف${x.n?' · المتوسط '+B(UV_FB(x.bytes/x.n)):''}`,v:x.bytes,val:UV_FB(x.bytes)}));
+    set('uvst',uvMeter('المستهلك من التخزين',total,1073741824,'الحد المجاني '+B('1 GB'))+`<h4>توزيع الحجم حسب المجلد</h4>`+(rows.length?uvRank(rows,total):'<p class="hint">لا توجد ملفات.</p>'));
+  }catch(e){fail('uvst','تعذر قراءة تخزين Supabase.')}})();
+  /* 3) R2 */
+  (async()=>{try{
     const [im,us]=await Promise.all([r2ListAll('img'),r2ListAll('user')]);
-    if(!$('r2box'))return;
-    const si=im.reduce((a,o)=>a+o.size,0),su=us.reduce((a,o)=>a+o.size,0);
-    const students=new Set(us.map(o=>o.key.split('/')[1])).size;
-    const tot=si+su,pct=Math.min(100,tot/(R2_LIMIT_GB*1073741824)*100);
-    el.innerHTML=`<div class="item" style="--sc:${pct>=80?'#C0392B':pct>=60?'#B7791F':'#1A56B0'};display:block">
-      <div class="nm">تخزين R2: <bdi>${mbs(tot)} MB</bdi> من <bdi>${R2_LIMIT_GB} GB</bdi> مجانية (${ar(pct<1?'أقل من 1':Math.round(pct))}%)</div>
-      <div class="sub">صور الأسئلة: ${ar(im.length)} ملف، <bdi>${mbs(si)} MB</bdi></div>
-      <div class="sub">بيانات الطلاب: ${ar(us.length)} ملف لـ ${ar(students)} طالب، <bdi>${mbs(su)} MB</bdi></div>
-      <div class="bar"><i style="width:${Math.max(pct,1).toFixed(1)}%"></i></div></div>
-      <div class="hint">حد الطلبات اليومي وعدد الكتابات الشهرية يظهران في لوحة Cloudflare داخل Workers وR2 ثم Metrics. أما استهلاك قاعدة البيانات فهو في البطاقة أعلاه.</div>`;
-  }catch(e){if($('r2box'))$('r2box').textContent=e.message||'تعذر قراءة الاستهلاك.'}
+    if(!$('uvr2'))return;
+    const si=im.reduce((a,o)=>a+o.size,0),su=us.reduce((a,o)=>a+o.size,0),tot=si+su;
+    const kinds={'notes.json.gz':['الملاحظات والتظليل',2],'questions.json.gz':['الأسئلة الخاصة والبطاقات',3],'progress.json.gz':['تقدم الطلاب',4]};
+    const kb={},kn={},per={};
+    us.forEach(o=>{const p=o.key.split('/'),f=p[2]||'',uid=p[1]||'';kb[f]=(kb[f]||0)+o.size;kn[f]=(kn[f]||0)+1;per[uid]=(per[uid]||0)+o.size});
+    const uids=Object.keys(per),stu=uids.length,sorted=uids.map(u=>[u,per[u]]).sort((a,b)=>b[1]-a[1]);
+    const parts=[{n:'صور الأسئلة',v:si,s:1,sub:B(im.length.toLocaleString('en-US'))+' ملف'}].concat(Object.keys(kinds).map(f=>({n:kinds[f][0],v:kb[f]||0,s:kinds[f][1],sub:B((kn[f]||0).toLocaleString('en-US'))+' ملف'})));
+    /* أحجام الصور */
+    const ib=[['أقل من '+B('50 KB'),0,51200],[B('50 KB')+' إلى '+B('200 KB'),51200,204800],[B('200 KB')+' إلى '+B('1 MB'),204800,1048576],['أكبر من '+B('1 MB'),1048576,Infinity]].map(([n,a,z])=>{const g=im.filter(o=>o.size>=a&&o.size<z);return {n,c:g.length,b:g.reduce((x,o)=>x+o.size,0)}});
+    const irows=ib.map(x=>({n:x.n,sub:'الإجمالي '+B(UV_FB(x.b)),v:x.c,val:B(x.c.toLocaleString('en-US'))+' صورة',tip:`${x.n.replace(/<[^>]+>/g,'')}: ${x.c} صورة، ${UV_FB(x.b)}`}));
+    /* أحجام الطلاب */
+    const sb2=[['أقل من '+B('100 KB'),0,102400],[B('100 KB')+' إلى '+B('500 KB'),102400,512000],[B('500 KB')+' إلى '+B('1.5 MB'),512000,1572864],['أكبر من '+B('1.5 MB'),1572864,Infinity]].map(([n,a,z])=>({n,c:sorted.filter(x=>x[1]>=a&&x[1]<z).length}));
+    const srows=sb2.map(x=>({n:x.n,v:x.c,val:B(x.c)+' طالب',tip:`${x.n.replace(/<[^>]+>/g,'')}: ${x.c} طالب`}));
+    const med=stu?sorted[Math.floor(stu/2)][1]:0;
+    /* أثقل الطلاب بالأسماء */
+    const top=sorted.slice(0,5);let names={};
+    try{if(top.length){const q=await sb.from('profiles').select('id,full_name').in('id',top.map(x=>x[0]));(q.data||[]).forEach(p=>{names[p.id]=p.full_name})}}catch(e){}
+    const trows=top.map(([u,v])=>({n:esc(names[u]||('طالب '+u.slice(0,8))),v,val:UV_FB(v),tip:`${names[u]||u}: ${UV_FB(v)}`}));
+    if(!$('uvr2'))return;
+    set('uvr2',uvMeter('المستهلك من R2',tot,10*1073741824,'الحد المجاني '+B('10 GB'))
+      +`<h4>توزيع المساحة</h4>`+uvSeg(parts)
+      +`<h4>أحجام الصور (${B(im.length.toLocaleString('en-US'))} صورة${im.length?'، المتوسط '+B(UV_FB(si/im.length)):''})</h4>`+uvRank(irows,0)
+      +`<h4>بيانات الطلاب (${B(stu)} طالب)</h4>`
+      +(stu?`<p class="cap">المتوسط <bdi>${UV_FB(su/stu)}</bdi> لكل طالب، والوسيط <bdi>${UV_FB(med)}</bdi>، والأكبر <bdi>${UV_FB(sorted[0][1])}</bdi></p>`+uvRank(srows,0)+`<h4>الأثقل بياناتاً</h4>`+uvRank(trows,su):'<p class="hint">لا توجد بيانات طلاب بعد.</p>'));
+    loadCfMetrics();
+  }catch(e){fail('uvr2',esc(e.message||'تعذر قراءة R2.'));const c=$('cfm');if(c)c.textContent=''}})();
+}
+async function loadCfMetrics(){
+  const el=$('cfm');if(!el)return;
+  try{
+    const r=await r2Fetch('/api/admin/metrics');const j=await r.json();
+    if(!$('cfm'))return;
+    if(j.error==='no_token'){el.textContent='لعرض الطلبات والعمليات: أضف السر CF_API_TOKEN إلى الـ Worker في Cloudflare (Settings ثم Variables and Secrets).';return}
+    if(j.error){el.textContent='تعذر قراءة مقاييس Cloudflare: '+(j.detail||j.error);return}
+    const row=(t,v,lim,note)=>uvMeter(t,v,lim,note,n=>n.toLocaleString('en-US'));
+    el.innerHTML='<h4>طلبات وعمليات Cloudflare</h4>'+row('طلبات الـ Worker اليوم',j.workers_today,100000,'يتصفر الساعة 3 فجراً بتوقيت العراق'+(j.workers_errors?'، منها '+ar(j.workers_errors)+' بخطأ':''))
+      +row('عمليات الكتابة في R2 هذا الشهر',j.r2_class_a,1000000,'الحفظ والرفع والقوائم')
+      +row('عمليات القراءة في R2 هذا الشهر',j.r2_class_b,10000000,'تحميل الملفات والصور');
+  }catch(e){if($('cfm'))$('cfm').textContent='تعذر قراءة مقاييس Cloudflare.'}
 }
 /* كاتب ZIP بسيط بدون ضغط (الصور والملفات مضغوطة أصلاً) */
 const CRC_T=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})();
@@ -976,15 +1118,18 @@ async function cleanR2(){
       else if(stale.has(l)){st.add(u);sb2+=o.size}});
     const ib=oi.reduce((a,o)=>a+o.size,0);
     if(!oi.length&&!ou.size&&!st.size){say('لا يوجد شيء للتنظيف. كل الصور مستعملة، ولا ملفات لطلاب محذوفين أو انتهى اشتراكهم قبل أكثر من سنة.');return}
-    const ok=await askConfirm('تنظيف R2','سيُحذف نهائياً: '+ar(oi.length)+' صورة يتيمة (<bdi>'+ar(mbs(ib))+' MB</bdi>) وملفات '+ar(ou.size)+' طالب محذوف (<bdi>'+ar(mbs(ub))+' MB</bdi>) وملفات '+ar(st.size)+' طالب انتهى اشتراكه قبل أكثر من سنة (<bdi>'+ar(mbs(sb2))+' MB</bdi>، يبقى حسابهم ويُحذف فقط ملاحظاتهم وأسئلتهم الخاصة). الصور الأحدث من ساعة وصور سلة المحذوفات لا تُمس. أنصحك بتنزيل نسخة شاملة قبل التنظيف. تتابع؟'.replace(/<\/?bdi[^>]*>/g,''),'احذف');
+    const ok=await askConfirm('تنظيف R2','سيُحذف نهائياً: '+ar(oi.length)+' صورة يتيمة (<bdi>'+ar(mbs(ib))+' MB</bdi>) وملفات '+ar(ou.size)+' طالب محذوف (<bdi>'+ar(mbs(ub))+' MB</bdi>) وملفات '+ar(st.size)+' طالب انتهى اشتراكه قبل أكثر من سنة (<bdi>'+ar(mbs(sb2))+' MB</bdi>، يبقى حسابهم وتقدمهم ويُحذف فقط ملاحظاتهم وأسئلتهم الخاصة). الصور الأحدث من ساعة وصور سلة المحذوفات لا تُمس. أنصحك بتنزيل نسخة شاملة قبل التنظيف. تتابع؟'.replace(/<\/?bdi[^>]*>/g,''),'احذف');
     if(!ok){say('');return}
     let di=0,du=0,fail=0;
     for(const o of oi){
       try{await imgCall('DELETE',IMG_API+'?path='+encodeURIComponent(o.key));di++}catch(e){fail++}
       if((di+fail)%20===0)say('جارٍ الحذف… '+ar(di+fail)+' من '+ar(oi.length));
     }
-    for(const u of [...ou,...st]){
+    for(const u of ou){
       try{await imgCall('DELETE','/api/data?uid='+encodeURIComponent(u));du++}catch(e){fail++}
+    }
+    for(const u of st){   // منتهي الاشتراك: نحذف الملاحظات والأسئلة الخاصة ونُبقي التقدم
+      try{await imgCall('DELETE','/api/data?keep=progress&uid='+encodeURIComponent(u));du++}catch(e){fail++}
     }
     say('تم حذف '+ar(di)+' صورة يتيمة وملفات '+ar(du)+' طالب (محذوف أو منتهٍ اشتراكه منذ أكثر من سنة)'+(fail?'، وفشل '+ar(fail)+' (أعد المحاولة)':'')+'.');
   }catch(e){say(e.message||errMsg(e))}
@@ -1000,16 +1145,34 @@ async function fullBackup(){
       fetchAll(()=>sb.from('questions').select('*').order('id'))]);
     const ac=await sb.rpc('admin_backup_accounts');
     if(ac.error)throw ac.error;
+    const tables={};
+    for(const t of BK_TABLES){
+      say('جارٍ جمع الجداول: '+t+'…');
+      let rows=[],from=0;
+      for(;;){
+        const r=await sb.rpc('admin_backup_table',{p_table:t,p_from:from,p_n:5000});
+        if(r.error)throw r.error;
+        const part=r.data||[];rows=rows.concat(part);
+        if(part.length<5000)break;from+=5000;
+      }
+      tables[t]=rows;
+    }
     say('جارٍ قراءة قائمة الصور وبيانات الطلاب…');
     const [im,us]=await Promise.all([r2ListAll('img'),r2ListAll('user')]);
     const files=im.map(o=>({b:'img',key:o.key,size:o.size,name:'images/'+o.key})).concat(us.map(o=>({b:'user',key:o.key,size:o.size,name:'userdata/'+o.key.slice(6)})));
+    for(const [bk,dir] of BK_BUCKETS){
+      const l=await sb.rpc('admin_storage_list',{p_bucket:bk});
+      if(l.error)throw l.error;
+      (l.data||[]).forEach(o=>files.push({sbk:bk,key:o.name,size:Number(o.size)||0,name:dir+'/'+o.name}));
+    }
     const tot=files.reduce((a,o)=>a+o.size,0),parts=Math.max(1,Math.ceil(tot/PART_BYTES));
-    const ok=await askConfirm('نسخة احتياطية شاملة','ستُنزَّل '+ar(files.length)+' ملف (صور وبيانات طلاب) بحجم حوالي '+ar(mbs(tot))+' MB، مقسومة إلى حوالي '+ar(parts)+' ملف ZIP. اترك هذه الصفحة مفتوحة حتى ينتهي. هل تتابع؟','ابدأ');
+    const ok=await askConfirm('نسخة احتياطية شاملة','ستُنزَّل الجداول (لوحة الصدارة، أيام النشاط، إحصائيات الأسئلة…) و'+ar(files.length)+' ملف (صور، تقدم الطلاب، ملاحظاتهم، أغلفة المواد) بحجم حوالي '+ar(mbs(tot))+' MB، مقسومة إلى حوالي '+ar(parts)+' ملف ZIP. اترك هذه الصفحة مفتوحة حتى ينتهي. هل تتابع؟','ابدأ');
     if(!ok){say('');return}
     const day=new Date().toISOString().slice(0,10),failed=[];
     let z=zipNew(),pn=1;const names=[];
-    const dataJson=new TextEncoder().encode(JSON.stringify({app:'boardcard-full',version:2,exported_at:new Date().toISOString(),note:'بدون كلمات السر. الصور في images/ وبيانات الطلاب في userdata/ داخل ملفات ZIP.',content:{specialties:sp,subjects:su,systems:sy,questions:qs},accounts:ac.data},null,1));
+    const dataJson=new TextEncoder().encode(JSON.stringify({app:'boardcard-full',version:2,exported_at:new Date().toISOString(),note:'بدون كلمات السر. الجداول في tables/، الصور في images/، ملاحظات وأسئلة الطلاب في userdata/، تقدم الطلاب في progress/، أغلفة المواد في covers/.',content:{specialties:sp,subjects:su,systems:sy,questions:qs},accounts:ac.data},null,1));
     zipAdd(z,'data.json',dataJson);
+    Object.keys(tables).forEach(t=>zipAdd(z,'tables/'+t+'.json',new TextEncoder().encode(JSON.stringify(tables[t]))));
     const flush=()=>{
       const nm='boardcard-backup-'+day+'-part'+pn+'.zip';names.push(nm);
       downloadBlob(nm,zipBlob(z));pn++;z=zipNew();
@@ -1019,6 +1182,11 @@ async function fullBackup(){
     const one=async f=>{
       for(let t=0;t<2;t++){
         try{
+          if(f.sbk){
+            const d=await sb.storage.from(f.sbk).download(f.key);
+            if(d.error||!d.data)throw d.error||new Error('x');
+            return new Uint8Array(await d.data.arrayBuffer());
+          }
           const r=await r2Fetch('/api/admin/get?b='+f.b+'&key='+encodeURIComponent(f.key));
           if(!r.ok)throw new Error(String(r.status));
           return new Uint8Array(await r.arrayBuffer());

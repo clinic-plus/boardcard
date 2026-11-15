@@ -202,7 +202,8 @@ mark.hl{background:rgba(255,214,0,.5);color:inherit;border-radius:4px;padding:0 
 .ntbox b{display:block;font-size:13px;color:var(--muted);margin-bottom:2px;font-weight:600}
 .qtools{display:grid;grid-template-columns:repeat(6,1fr);gap:5px;margin:0 0 16px}
 .tb{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:54px;padding:6px 0;border-radius:14px;background:var(--glass);border:1px solid var(--glass-brd);box-shadow:var(--glass-sh);color:var(--ink);font-size:10.5px;font-weight:600}
-.tb .i{font-size:19px;line-height:1}
+.tb .i{font-size:19px;line-height:1;position:relative}
+.tb .cnt{position:absolute;top:-7px;inset-inline-end:-12px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:#1F5FBF;color:#fff;font-size:10px;line-height:16px;font-weight:700;text-align:center;font-style:normal}
 .tb.on{border-color:#E0A100;color:var(--gold);background:var(--gold-bg)}
 .exp b{display:block;font-size:13px;color:var(--muted);margin-bottom:2px;font-weight:600}
 .acts{display:flex;gap:8px}
@@ -1333,15 +1334,40 @@ function settingsModal(){
 }
 /* ---------- مزامنة التقدم مع Supabase Storage ---------- */
 let PU=null,PD=false,PT=null,PBusy=false,PLast=null;
+const PROG_GZ_MAX=3000000;
 const PSYNC=['cards','starred','starDel','days','exams','badges','goal','freezes','frozen','fzMs','total','newLimit','newDay','ep','pu','dq','exd'];
+/* ضغط حجم ملف التقدم: الأرقام العشرية تُقرَّب لثلاث خانات، ومواعيد المراجعة تُخزَّن بالدقائق بدل الملّي ثانية.
+   يُطبَّق عند الحفظ فقط (cv:1) ويُعكس عند القراءة، فلا يتغير أي شيء في الجدولة (فرق أقل من دقيقة). */
+const r3=x=>typeof x==='number'?Math.round(x*1000)/1000:x;
+const toMin=x=>typeof x==='number'?Math.round(x/60000):x;
+const fromMin=x=>typeof x==='number'?x*60000:x;
+function packCards(cards){
+  const out={};
+  Object.keys(cards||{}).forEach(id=>{const c=cards[id];if(!c||typeof c!=='object'){out[id]=c;return}
+    const p=Object.assign({},c);
+    if('sb' in p)p.sb=r3(p.sb);if('df' in p)p.df=r3(p.df);
+    if('lr' in p)p.lr=toMin(p.lr);if('due' in p)p.due=toMin(p.due);
+    out[id]=p});
+  return out;
+}
+function unpackProgress(R){
+  if(!R||R.cv!==1||!R.cards)return R;
+  const out={};
+  Object.keys(R.cards).forEach(id=>{const c=R.cards[id];if(!c||typeof c!=='object'){out[id]=c;return}
+    const p=Object.assign({},c);
+    if('lr' in p)p.lr=fromMin(p.lr);if('due' in p)p.due=fromMin(p.due);
+    out[id]=p});
+  R.cards=out;delete R.cv;return R;
+}
 function pBody(withPu,obj){
   const src=obj||S,o={v:1};
   PSYNC.forEach(k=>{if(k==='pu'&&!withPu)return;if(src[k]!==undefined)o[k]=src[k]});
+  if(o.cards){o.cards=packCards(o.cards);o.cv=1}
   return JSON.stringify(o);
 }
 const gzip=async str=>{if(typeof CompressionStream==='undefined')return null;return await new Response(new Blob([str]).stream().pipeThrough(new CompressionStream('gzip'))).blob()};
 const gunzip=async blob=>await new Response(blob.stream().pipeThrough(new DecompressionStream('gzip'))).text();
-function schedP(){if(!PT)PT=setTimeout(pushProgress,30000)}
+function schedP(){if(!PT)PT=setTimeout(pushProgress,240000)}   // 4 دقائق؛ ويُرفع فوراً عند الخروج من الصفحة
 function markP(){if(PU){PD=true;schedP()}}
 function localRaw(){try{localStorage.setItem(SKEY,JSON.stringify(S))}catch(e){}}
 function initP(uid){
@@ -1355,10 +1381,18 @@ async function pushProgress(){
   if(key===PLast){PD=false;return}
   PBusy=true;const uid=PU,str=pBody(true);
   try{
-    const st=sb.storage.from('user-progress'),z=await gzip(str);
-    const r=z?await st.upload(uid+'/progress.json.gz',z,{upsert:true,contentType:'application/gzip'})
-             :await st.upload(uid+'/progress.json',new Blob([str],{type:'application/json'}),{upsert:true,contentType:'application/json'});
-    if(PU===uid&&!r.error){PLast=key;if(pBody(false)===key)PD=false;else schedP()}
+    let ok=false;
+    if(GZ){   // الملف على R2 عبر الـ Worker
+      const z=await gzBlob(str);
+      if(z.size>PROG_GZ_MAX){PBusy=false;return}
+      ok=await dataPut('progress',z,true);
+    }else{    // متصفح بلا gzip: المسار القديم على Supabase
+      const st=sb.storage.from('user-progress'),z=await gzip(str);
+      const r=z?await st.upload(uid+'/progress.json.gz',z,{upsert:true,contentType:'application/gzip'})
+               :await st.upload(uid+'/progress.json',new Blob([str],{type:'application/json'}),{upsert:true,contentType:'application/json'});
+      ok=!r.error;
+    }
+    if(PU===uid&&ok){PLast=key;if(pBody(false)===key)PD=false;else schedP()}
   }catch(e){}
   PBusy=false;
 }
@@ -1394,20 +1428,27 @@ function mergeProgress(R){
 }
 async function loadProgressRemote(){
   const uid=PU;if(!uid)return;
-  let text=null;
+  let text=null,R=null,migrate=false;
   try{
-    const st=sb.storage.from('user-progress');
-    const r=await st.download(uid+'/progress.json.gz');
-    if(!r.error&&r.data)text=await gunzip(r.data);
-    else{const r2=await st.download(uid+'/progress.json');if(!r2.error&&r2.data)text=await r2.data.text()}
+    if(GZ){
+      let j=null;
+      try{j=await dataGet('progress')}catch(e){return}   // تعذر الوصول: نكتفي بالنسخة المحلية
+      if(PU!==uid)return;
+      if(j)R=unpackProgress(j);
+    }
+    if(!R){   // لا نسخة على R2 بعد (أو المتصفح بلا gzip): نقرأ النسخة القديمة من Supabase وننقلها
+      const st=sb.storage.from('user-progress');
+      const r=await st.download(uid+'/progress.json.gz');
+      if(!r.error&&r.data)text=await gunzip(r.data);
+      else{const r2=await st.download(uid+'/progress.json');if(!r2.error&&r2.data)text=await r2.data.text()}
+      if(text){try{R=unpackProgress(JSON.parse(text))}catch(e){return}if(GZ)migrate=true}
+    }
   }catch(e){return}
   if(PU!==uid)return;
-  let R=null;
-  if(text){try{R=JSON.parse(text)}catch(e){return}}
   if(R)mergeProgress(R);
   localRaw();
-  const remoteKey=R?pBody(false,R):null;
-  if(pBody(false)!==remoteKey){PD=true;pushProgress()}else PLast=remoteKey;
+  const remoteKey=(R&&!migrate)?pBody(false,R):null;
+  if(migrate||pBody(false)!==remoteKey){PD=true;PLast=null;pushProgress()}else PLast=remoteKey;
   if(view==='home')home();
 }
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')pushProgress()});
@@ -1465,7 +1506,7 @@ async function loadNotesRemote(){
     if(ND)pushNotes();
   }catch(e){}
 }
-function touchN(){ND=true;NV++;nCache();clearTimeout(NT);NT=setTimeout(pushNotes,GZ?120000:2000)}
+function touchN(){ND=true;NV++;nCache();clearTimeout(NT);NT=setTimeout(pushNotes,GZ?240000:2000)}
 /* تحذير مبكر: عند وصول حجم الملف إلى 80% من الحد يظهر تنبيه مرة واحدة كل يوم */
 function limitWarn(kind,size,max,label){
   if(size<max*0.8||size>max)return;
@@ -1525,7 +1566,7 @@ function loadPQRemote(){
   })().finally(()=>{if(PQP===p)PQP=null});
   PQP=p;return p;
 }
-function touchPQ(){PQD=true;PQV++;pqCache();clearTimeout(PQT);PQT=setTimeout(pushPQ,120000)}
+function touchPQ(){PQD=true;PQV++;pqCache();clearTimeout(PQT);PQT=setTimeout(pushPQ,240000)}
 async function pushPQ(){
   clearTimeout(PQT);
   if(!PQU||!PQD||!GZ)return;
@@ -1764,7 +1805,7 @@ function hlTool(id){
 const toolsHtml=c=>{
   const id=esc(c.id),on=!!S.starred[c.id],hasN=noteOk(c)&&!!noteGet(c.id);
   const b=(k,ico,lab,cls)=>`<button type="button" class="tb${cls?' on':''}" data-tb="${k}" data-id="${id}"><span class="i">${ico}</span><span class="l">${lab}</span></button>`;
-  return `<div class="qtools" role="toolbar" aria-label="أدوات السؤال">${b('rep',ico('flag'),'إبلاغ',false)}${b('star',ico('star'),'حفظ',on)}${b('hl',ico('hl'),'تظليل',false)}${b('note',ico('note'),'ملاحظة',hasN)}${b('share',ico('share'),'مشاركة',false)}${b('disc',ico('chat'),'نقاش',false)}</div>`;
+  return `<div class="qtools" role="toolbar" aria-label="أدوات السؤال">${b('rep',ico('flag'),'إبلاغ',false)}${b('star',ico('star'),'حفظ',on)}${b('hl',ico('hl'),'تظليل',false)}${b('note',ico('note'),'ملاحظة',hasN)}${b('share',ico('share'),'مشاركة',false)}${b('disc',ico('chat')+ccBadge(c.id),'تعليقات',false)}</div>`;
 };
 function bindTools(){
   app.querySelectorAll('.qtools .tb').forEach(b=>{
@@ -2684,27 +2725,55 @@ async function customRun(groups){
   runSession(list,'custom');
 }
 
+/* عدّاد التعليقات على زر «تعليقات»: دالة قاعدة بيانات خفيفة، تُجمَّع طلباتها وتُخزَّن لخمس دقائق */
+const CC={};let ccQ=new Set(),ccT=null;
+const ccN=id=>(CC[id]&&CC[id].n)||0;
+const ccBadge=id=>{if(Store.user)ccWant(id);const n=ccN(id);return n?`<i class="cnt">${n>99?'99+':ar(n)}</i>`:''};
+function ccWant(id){
+  const e=CC[id];if(e&&Date.now()-e.t<300000)return;
+  ccQ.add(id);clearTimeout(ccT);ccT=setTimeout(ccFlush,200);
+}
+async function ccFlush(){
+  if(!Store.user||!ccQ.size)return;
+  const all=[...ccQ],ids=all.slice(0,200);ccQ=new Set(all.slice(200));
+  try{
+    const r=await sb.rpc('q_comment_counts',{p_ids:ids});
+    if(r.error)return;
+    const m=r.data||{},now=Date.now();
+    ids.forEach(id=>{CC[id]={n:+m[id]||0,t:now};ccPaint(id)});
+  }catch(e){}
+  if(ccQ.size)ccT=setTimeout(ccFlush,200);
+}
+function ccPaint(id){
+  document.querySelectorAll('.qtools .tb[data-tb="disc"]').forEach(b=>{
+    if(b.dataset.id!==id)return;
+    const i=b.querySelector('.i');if(!i)return;
+    const old=i.querySelector('.cnt');if(old)old.remove();
+    const n=ccN(id);if(n)i.insertAdjacentHTML('beforeend',`<i class="cnt">${n>99?'99+':ar(n)}</i>`);
+  });
+}
 /* ---------- نقاش تحت كل سؤال (يُحفظ في Supabase Storage عبر دالة q-comments) ---------- */
 const agoTxt=ts=>{const m=Math.max(0,Math.floor((Date.now()-ts)/6e4));return m<1?'الآن':m<60?'قبل '+ar(m)+' د':m<1440?'قبل '+ar(Math.floor(m/60))+' ساعة':'قبل '+ar(Math.floor(m/1440))+' يوم'};
-const DISCERR={cooldown:'انتظر قليلاً قبل التعليق مرة أخرى.',too_many:'وصلت للحد الأقصى من تعليقاتك على هذا السؤال.',bad_text:'اكتب تعليقاً من 1 إلى 500 حرف.',subscribers_only:'النقاش لمشتركي هذا الاختصاص فقط.',blocked:'حسابك موقوف.'};
+const DISCERR={cooldown:'انتظر قليلاً قبل التعليق مرة أخرى.',too_many:'وصلت للحد الأقصى من تعليقاتك على هذا السؤال.',bad_text:'اكتب تعليقاً من 1 إلى 150 حرفاً.',daily_limit:'وصلت للحد اليومي (10 تعليقات). جرب غداً.',disabled:'إضافة التعليقات متوقفة مؤقتاً.',subscribers_only:'النقاش لمشتركي هذا الاختصاص فقط.',blocked:'حسابك موقوف.'};
 async function discModal(id){
   if(!Store.user){toast('النقاش متاح للمشتركين.');return}
   const c=Store.qmap[id];if(!c)return;
   if(!(Store.isAdmin||Store.subs[qSp(c)])){
-    showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>💬 نقاش السؤال</h2><p>النقاش بين مشتركي هذا الاختصاص فقط. ${Store.premium?'هذا السؤال ضمن اختصاص لست مشتركاً به.':''}</p><button class="btn block" id="dsub">${Store.premium?'طلب اشتراك باختصاص آخر':'اشترك لفتح النقاش'}</button>`);
+    showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>💬 تعليقات السؤال</h2><p>النقاش بين مشتركي هذا الاختصاص فقط. ${Store.premium?'هذا السؤال ضمن اختصاص لست مشتركاً به.':''}</p><button class="btn block" id="dsub">${Store.premium?'طلب اشتراك باختصاص آخر':'اشترك لفتح النقاش'}</button>`);
     $('cl').onclick=closeModal;$('dsub').onclick=()=>{closeModal();paywall()};return;
   }
-  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>💬 نقاش السؤال</h2>
+  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>💬 تعليقات السؤال</h2>
     <p class="hint">نقاش بين مشتركي هذا الاختصاص. كن محترماً ولا تنشر معلومات طبية غير موثوقة.</p>
     <div id="dsl" style="max-height:38vh;overflow:auto"><p class="hint">جارٍ التحميل…</p></div>
-    <label class="fld" style="margin-top:10px"><textarea class="in" id="dst" maxlength="500" dir="auto" placeholder="اكتب تعليقك أو سؤالك…" style="min-height:70px"></textarea></label>
+    <label class="fld" style="margin-top:10px"><textarea class="in" id="dst" maxlength="150" dir="auto" placeholder="اكتب تعليقك أو سؤالك…" style="min-height:70px"></textarea></label>
     <p class="err" id="er" role="alert"></p><button class="btn block" id="dss">إرسال</button>`);
   $('cl').onclick=closeModal;
-  const call=async body=>{let r;try{r=await sb.functions.invoke('q-comments',{body:Object.assign({qid:id},body)})}catch(e){r={error:{}}}const err=await fnCode(r);return {err:err,list:r.data&&r.data.comments}};
+  const call=async body=>{let r;try{r=await sb.functions.invoke('q-comments',{body:Object.assign({qid:id},body)})}catch(e){r={error:{}}}const err=await fnCode(r);return {err:err,list:r.data&&r.data.comments,enabled:r.data&&r.data.enabled}};
   const render=list=>{
     const box=$('dsl');if(!box)return;
     box.innerHTML=list.length?list.map(m=>`<div class="item" style="--sc:${m.mine?'#1F5FBF':'#5A6B77'};align-items:flex-start;margin-bottom:8px"><div class="grow"><div class="nm" dir="auto" style="font-size:14px">${esc(m.n)} <small style="color:var(--muted);font-weight:400">· ${agoTxt(m.ts)}</small></div><div dir="auto" style="white-space:pre-wrap;word-break:break-word;font-size:15px">${esc(m.t)}</div></div>${m.can_del?`<button class="pill" data-dd="${esc(m.i)}">حذف</button>`:''}</div>`).join(''):'<p class="hint">لا توجد تعليقات بعد. كن أول من يعلّق.</p>';
     box.scrollTop=box.scrollHeight;
+    CC[id]={n:list.length,t:Date.now()};ccPaint(id);
     box.querySelectorAll('[data-dd]').forEach(b=>b.onclick=async()=>{
       if(!(await askConfirm('حذف التعليق','سيُحذف هذا التعليق نهائياً.','احذف')))return;
       const r=await call({action:'delete',cid:b.dataset.dd});
@@ -2712,10 +2781,12 @@ async function discModal(id){
       render(r.list);
     });
   };
+  const lockAdd=()=>{const t=$('dst'),b=$('dss');if(t&&t.parentNode)t.parentNode.style.display='none';if(b){b.outerHTML='<p class="hint">إضافة التعليقات متوقفة مؤقتاً. يمكنك قراءة النقاش فقط.</p>'}};
   const r0=await call({action:'list'});
   if(!$('dsl'))return;
   if(r0.err||!r0.list){$('dsl').innerHTML=`<p class="err">${DISCERR[r0.err]||'تعذر تحميل النقاش. جرب مرة ثانية.'}</p>`}else render(r0.list);
-  $('dss').onclick=async()=>{
+  if(r0.enabled===false)lockAdd();
+  if($('dss'))$('dss').onclick=async()=>{
     const t=($('dst').value||'').trim();if(!t){return}
     $('dss').disabled=true;$('er').textContent='';
     const r=await call({action:'add',text:t});
