@@ -807,6 +807,23 @@ async function loadMe(){
   Store.subs={};
   (r[1].data||[]).forEach(x=>{if(new Date(x.expires_at)>new Date())Store.subs[x.specialty_id]=x.expires_at});
   Store.premium=Object.keys(Store.subs).length>0;
+  Store.lastExp=(r[1].data||[]).reduce((m,x)=>Math.max(m,new Date(x.expires_at).getTime()||0),0);
+  setTimeout(expWarn,2500);
+}
+/* تنبيه قبل حذف بيانات الطالب (ملاحظاته وأسئلته الخاصة) بعد سنة من انتهاء اشتراكه: فور الانتهاء، ثم كل 30 يوماً، وكل 7 أيام في آخر 30 يوماً */
+function expWarn(){
+  try{
+    if(!Store.user||Store.isAdmin||Store.premium||!Store.lastExp)return;
+    const days=(Date.now()-Store.lastExp)/864e5;
+    if(days<0||days>=365)return;
+    const hasData=Object.keys((N&&N.q)||{}).some(k=>N.q[k]&&!N.q[k].x)||pqLive().length>0;
+    if(!hasData)return;
+    const k='bc_expw_'+Store.user.id,last=+localStorage.getItem(k)||0,gap=(days>=335?7:30)*864e5;
+    if(last&&Date.now()-last<gap)return;localStorage.setItem(k,String(Date.now()));
+    const del=Store.lastExp+365*864e5;
+    showModal(`<h2>تنبيه قبل حذف بياناتك</h2><p>انتهى اشتراكك، وبياناتك (ملاحظاتك وتظليلك وأسئلتك الخاصة) محفوظة حالياً، لكنها ستُحذف بتاريخ <bdi>${fdate(del)}</bdi> إذا لم تجدد اشتراكك قبله.</p><p class="hint">حسابك وتقدمك في الأسئلة الرسمية لا يتأثران. للتجديد تواصل معنا.</p><button class="btn block" id="expok">حسناً</button>`);
+    $('expok').onclick=closeModal;
+  }catch(e){}
 }
 function errMsg(e){
   const c=e&&(e.code||'');const m=(e&&e.message)||'';
@@ -1449,6 +1466,13 @@ async function loadNotesRemote(){
   }catch(e){}
 }
 function touchN(){ND=true;NV++;nCache();clearTimeout(NT);NT=setTimeout(pushNotes,GZ?120000:2000)}
+/* تحذير مبكر: عند وصول حجم الملف إلى 80% من الحد يظهر تنبيه مرة واحدة كل يوم */
+function limitWarn(kind,size,max,label){
+  if(size<max*0.8||size>max)return;
+  const k='bc_lw_'+kind+'_'+(NU||PQU||''),day=new Date().toISOString().slice(0,10);
+  try{if(localStorage.getItem(k)===day)return;localStorage.setItem(k,day)}catch(e){}
+  toast('اقتربت من حد '+label+' ('+ar(Math.round(size/max*100))+'% ممتلئ). احذف القديم الذي لا تحتاجه قبل أن يتوقف الحفظ.');
+}
 async function pushNotes(){
   clearTimeout(NT);
   if(!NU||!ND)return;
@@ -1463,6 +1487,7 @@ async function pushNotes(){
   }
   let gz;try{gz=await gzBlob(body)}catch(e){return}
   if(gz.size>NOTES_GZ_MAX){toast('ملاحظاتك وصلت للحد الأقصى، احذف بعضها.');return}
+  limitWarn('n',gz.size,NOTES_GZ_MAX,'الملاحظات');
   try{
     const ok=await dataPut('notes',gz,true);
     if(NU===uid&&ok&&NV===v){ND=false;nCache()}
@@ -1508,6 +1533,7 @@ async function pushPQ(){
   const uid=PQU,v=PQV;let gz;
   try{gz=await gzBlob(JSON.stringify({v:1,q:PQ.q}))}catch(e){return}
   if(gz.size>PQ_GZ_MAX){toast('وصلت للحد الأقصى من أسئلتك الخاصة، احذف بعضها.');return}
+  limitWarn('p',gz.size,PQ_GZ_MAX,'أسئلتك الخاصة');
   try{const ok=await dataPut('pq',gz,true);if(PQU===uid&&ok&&PQV===v){PQD=false;pqCache()}}catch(e){}
 }
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')pushPQ()});
