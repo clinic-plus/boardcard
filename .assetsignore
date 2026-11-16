@@ -1,4 +1,4 @@
 wrangler.jsonc
 .assetsignore
 README.md
-worker.j
+worker.js
