@@ -1,5 +1,5 @@
 /* Boardcard service worker: keeps the app shell available and never touches API calls. */
-const V = 'boardcard-v2';
+const V = 'boardcard-v3';
 const SHELL = ['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png', 'logo.png', 'logo-mark.png'];
 
 self.addEventListener('install', e => {
@@ -22,6 +22,8 @@ self.addEventListener('fetch', e => {
   const r = e.request, u = new URL(r.url);
   // Only same-origin GETs. Supabase, fonts and CDNs go straight to the network.
   if (r.method !== 'GET' || u.origin !== self.location.origin) return;
+  // Never touch the API (admin metrics, student notes/progress, backups): always straight to the network.
+  if (u.pathname.startsWith('/api/')) return;
 
   // The app page: network first (so updates arrive immediately), cached copy when offline.
   if (r.mode === 'navigate') {
