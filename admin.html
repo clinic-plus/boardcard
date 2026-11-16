@@ -675,8 +675,8 @@ function admin(){
     $('r2cl').onclick=cleanR2;
     loadCmtState();
     loadBackupInfo();
-    $('fs').onchange=e=>{A.fs=e.target.value;qList()};
-    $('fq').oninput=e=>{A.fq=e.target.value.trim();clearTimeout(qList.t);qList.t=setTimeout(qList,300)};
+    $('fs').onchange=e=>{A.fs=e.target.value;A.qn=60;qList()};
+    $('fq').oninput=e=>{A.fq=e.target.value.trim();A.qn=60;clearTimeout(qList.t);qList.t=setTimeout(()=>qList(),300)};
     qList();
   }else if(A.tab==='codes'){
     $('mk').onclick=makeCodes;bindPriceChips();
@@ -702,8 +702,8 @@ function admin(){
   }else{
     $('newStu').onclick=createStudentForm;
     $('chkRef').onclick=checkRefForm;
-    $('fu').oninput=e=>{A.fu=e.target.value.trim().toLowerCase();renderUsers()};
-    app.querySelectorAll('[data-fx]').forEach(b=>b.onclick=()=>{A.fx=b.dataset.fx;admin()});
+    $('fu').oninput=e=>{A.fu=e.target.value.trim().toLowerCase();A.un=40;renderUsers()};
+    app.querySelectorAll('[data-fx]').forEach(b=>b.onclick=()=>{A.fx=b.dataset.fx;A.un=40;admin()});
     loadUsers();
   }
 }
@@ -1373,7 +1373,8 @@ async function loadCodes(){
   const el=$('codelist');if(!el)return;
   if(r.error){el.innerHTML=`<p class="err">${esc(errMsg(r.error))}</p>`;return}
   el.innerHTML=r.data.length?r.data.map(c=>`<div class="item" style="--sc:${c.used_by?'#5A6B77':'#1F5FBF'}"><div class="grow"><div class="nm" dir="ltr" style="text-align:start">${esc(c.code)}</div>
-    <div class="sub">${esc(spById(c.specialty_id).n)}، ${ar(c.days)} يوم${c.note?'، '+esc(c.note):''}</div></div><span class="tag">${c.used_by?'مستخدم':'غير مستخدم'}</span></div>`).join(''):'<div class="empty">لا توجد أكواد بعد.</div>';
+    <div class="sub">${esc(spById(c.specialty_id).n)}، ${ar(c.days)} يوم${c.note?'، '+esc(c.note):''}</div></div>${c.used_by?'<span class="tag">مستخدم</span>':`<button class="ib" data-cc="${esc(c.code)}">نسخ</button>`}</div>`).join(''):'<div class="empty">لا توجد أكواد بعد.</div>';
+  el.querySelectorAll('[data-cc]').forEach(b=>b.onclick=()=>copyText(b.dataset.cc));
 }
 let USERS=[];
 async function loadUsers(){
@@ -1396,7 +1397,8 @@ function renderUsers(){
   let list=USERS.filter(u=>!f||((u.full_name||'')+' '+(u.username||'')).toLowerCase().includes(f));
   if(A.fx==='soon')list=list.filter(isSoon).sort((a,b)=>nextExp(a)-nextExp(b));
   else if(A.fx==='ended')list=list.filter(isEnded);
-  el.innerHTML=list.length?list.map(u=>{
+  const UN=A.un||40;
+  el.innerHTML=list.length?list.slice(0,UN).map(u=>{
     const subs=u.subs||[];
     const live=subs.filter(x=>new Date(x.exp)>now);
     const act=live.length>0;
@@ -1411,8 +1413,9 @@ function renderUsers(){
     return `<div class="item" style="--sc:${u.blocked?'#B93A32':(act?'#1F5FBF':'#5A6B77')};align-items:flex-start"><div class="grow"><div class="nm">${esc(u.full_name||'بدون اسم')}${u.role==='admin'?' (أدمن)':''}</div>
       <div class="sub">اسم المستخدم: <bdi dir="ltr" style="user-select:all">${esc(u.username||'')}</bdi></div>${pwHtml}${refHtml}${ambHtml}
       <div class="sub" style="margin-top:4px">الحالة: ${stTxt}، تاريخ إنشاء الحساب: ${fdate(u.created_at)}${u.last_login?'، آخر دخول '+fdate(u.last_login):''}</div>${subsHtml}${pendHtml}
-      <div class="acts3"><button class="ib" data-ur="${esc(u.id)}">تجديد</button>${stud?`${pend.length?`<button class="ib" data-uact="${esc(u.id)}">تفعيل الآن</button>`:''}<button class="ib" data-ued="${esc(u.id)}">تعديل</button><button class="ib" data-uamb="${esc(u.id)}">${u.is_amb?'إلغاء السفير':'تحويل إلى سفير'}</button>${u.is_amb?`<button class="ib" data-upaid="${esc(u.id)}">تسجيل دفع</button>`:''}<button class="ib" data-ucp="${esc(u.id)}">نسخ المعلومات</button>${act?`<button class="ib" data-uchg="${esc(u.id)}">تغيير الاشتراك</button><button class="ib del" data-ucan="${esc(u.id)}">إلغاء الاشتراك</button>`:''}<button class="ib" data-up="${esc(u.id)}">كلمة سر جديدة</button><button class="ib ${u.blocked?'':'del'}" data-ub="${esc(u.id)}">${u.blocked?'رفع الإيقاف':'إيقاف'}</button><button class="ib del" data-udel="${esc(u.id)}">حذف</button>`:''}</div></div></div>`}).join('')
+      <div class="acts3"><button class="ib" data-ur="${esc(u.id)}">تجديد</button>${stud?`${pend.length?`<button class="ib" data-uact="${esc(u.id)}">تفعيل الآن</button>`:''}<button class="ib" data-ued="${esc(u.id)}">تعديل</button><button class="ib" data-uamb="${esc(u.id)}">${u.is_amb?'إلغاء السفير':'تحويل إلى سفير'}</button>${u.is_amb?`<button class="ib" data-upaid="${esc(u.id)}">تسجيل دفع</button>`:''}<button class="ib" data-ucp="${esc(u.id)}">نسخ المعلومات</button>${act?`<button class="ib" data-uchg="${esc(u.id)}">تغيير الاشتراك</button><button class="ib del" data-ucan="${esc(u.id)}">إلغاء الاشتراك</button>`:''}<button class="ib" data-up="${esc(u.id)}">كلمة سر جديدة</button><button class="ib ${u.blocked?'':'del'}" data-ub="${esc(u.id)}">${u.blocked?'رفع الإيقاف':'إيقاف'}</button><button class="ib del" data-udel="${esc(u.id)}">حذف</button>`:''}</div></div></div>`}).join('')+(list.length>UN?`<button class="btn line block" id="umore">عرض المزيد (المعروض ${ar(UN)} من ${ar(list.length)})</button>`:'')
     :'<div class="empty">لا يوجد طلاب مطابقون.</div>';
+  {const um=$('umore');if(um)um.onclick=()=>{A.un=UN+40;renderUsers()}}
   el.querySelectorAll('[data-ur]').forEach(b=>b.onclick=()=>renewForm(USERS.find(x=>x.id===b.dataset.ur)));
   el.querySelectorAll('[data-ub]').forEach(b=>b.onclick=async()=>{
     const u=USERS.find(x=>x.id===b.dataset.ub);
@@ -1583,7 +1586,7 @@ function showCredentials(title,rows,message){
   showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>${esc(title)}</h2>
     ${rows.map(r=>`<div class="fld"><span>${esc(r[0])}</span><div class="in" dir="ltr" style="text-align:start;font-family:ui-monospace,Menlo,monospace;font-size:17px;user-select:all">${esc(r[1])}</div></div>`).join('')}
     <button class="btn block" id="cpm">نسخ الرسالة كاملة</button>
-    <p class="hint" style="margin-top:10px">تُحفظ كلمة السر وتظهر لك في قائمة الطلاب.</p>`);
+    ${rows.some(r=>/كلمة السر/.test(r[0]))?'<p class="hint" style="margin-top:10px">كلمة السر لا تُحفظ ولن تظهر مرة ثانية. انسخ الرسالة الآن وأرسلها للطالب، وإذا ضاعت أنشئ له كلمة سر جديدة.</p>':''}`);
   $('cl').onclick=closeModal;$('cpm').onclick=()=>copyText(message);
 }
 function createStudentForm(){
@@ -1709,11 +1712,11 @@ function resetPasswordForm(u){
   };
 }
 let QL=[],qtok=0;
-async function qList(){
+async function qList(more){
   const el=$('qlist');if(!el)return;
-  const my=++qtok;
-  el.innerHTML='<p class="hint">جارٍ التحميل…</p>';
-  let q=sb.from('questions').select('*').order('t',{ascending:false}).limit(60);
+  const my=++qtok,lim=Math.min(960,A.qn||60);
+  if(more!==true)el.innerHTML='<p class="hint">جارٍ التحميل…</p>';
+  let q=sb.from('questions').select('*').order('t',{ascending:false}).limit(lim);
   if(A.fs!=='all')q=q.eq('s',A.fs);
   if(A.fq)q=q.ilike('q','%'+A.fq.replace(/[\\%_]/g,m=>'\\'+m)+'%');
   const r=await q;
@@ -1724,10 +1727,11 @@ async function qList(){
     ?QL.map(q=>{const x=subjOf(q.s),y=q.sy?Store.systems.find(z=>z.id===q.sy):null;return `<div class="item" style="--sc:${safeC(x.c)}"><div class="grow"><div class="qt" dir="${dirOf(q.q)}">${esc(q.q)}</div>
       <div class="sub">${esc(spById(spOfSubj(x)).n)}، ${esc(x.n)}${y?'، '+esc(y.n):''}${q.y?'، '+ar(q.y):''}${q.free?'، مجاني':''}${q.img?'، 🖼 صورة':''}</div></div>
       <div class="acts2"><button class="ib" data-eq="${esc(q.id)}">تعديل</button><button class="ib del" data-dq="${esc(q.id)}">حذف</button></div></div>`}).join('')
-      +(QL.length>=60?`<p class="hint">يعرض أحدث 60 سؤالاً. استعمل البحث أو اختر مادة لعرض غيرها.</p>`:'')
+      +(QL.length>=lim?(lim<960?`<button class="btn line block" id="qmoreL">عرض 60 سؤالاً إضافياً (المعروض ${ar(QL.length)})</button>`:`<p class="hint">يعرض أحدث ${ar(lim)} سؤالاً. استعمل البحث أو اختر مادة لعرض غيرها.</p>`):'')
     :`<div class="empty">${cntTotal()?'لا توجد أسئلة مطابقة.':'لا توجد أسئلة بعد.'}</div>`;
   el.querySelectorAll('[data-eq]').forEach(b=>b.onclick=()=>questionForm(b.dataset.eq));
   el.querySelectorAll('[data-dq]').forEach(b=>b.onclick=()=>deleteQuestion(b.dataset.dq));
+  const ml=$('qmoreL');if(ml)ml.onclick=()=>{ml.disabled=true;ml.textContent='جارٍ التحميل…';A.qn=lim+60;qList(true)};
 }
 const bookImg=s=>`<span class="bk"><img class="cov pt" src="${esc(s)}" alt="" loading="lazy"></span>`;
 const covImg=u=>/^https:\/\//.test(u||'')?bookImg(u):'';
@@ -1852,7 +1856,7 @@ async function deleteEntity(col,id){
   }catch(x){toast(errMsg(x))}
 }
 async function deleteQuestion(id){
-  const ok=await askConfirm('حذف السؤال','سيتم حذف هذا السؤال نهائياً.','احذف');
+  const ok=await askConfirm('حذف السؤال','سيُحذف هذا السؤال من الموقع، ويبقى 30 يوماً في تبويب «المحذوفات» ويمكنك استرجاعه.','احذف');
   if(!ok)return;
   try{await del('questions',id);toast('تم حذف السؤال')}catch(e){toast(errMsg(e))}
 }
@@ -1893,8 +1897,9 @@ async function loadUsage(){
 function questionForm(id,keep){
   if(!Store.subjects.length){toast('أضف اختصاصاً ومادة أولاً من لوحة التحكم');return}
   const q=id?QL.find(x=>x.id===id):null;
-  const o=q?q.o:['','','',''];
+  const o=q?(q.o||[]).slice(0,6):['','','',''];
   while(o.length<4)o.push('');
+  const qorow=i=>`<div class="orow"><input type="radio" name="ans" value="${i}" id="r${i}" aria-label="الجواب الصحيح ${LET[i]}" ${(q?q.a:0)===i?'checked':''}><span class="l">${LET[i]}</span><input class="in" id="o${i}" dir="auto" value="${esc(o[i])}"></div>`;
   showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>${q?'تعديل السؤال':'سؤال جديد'}</h2>
     ${metaFields(q)}
     <label class="fld"><span>نص السؤال</span><textarea class="in" id="fQ" dir="auto">${esc(q?q.q:'')}</textarea></label>
@@ -1902,12 +1907,15 @@ function questionForm(id,keep){
       <input type="file" id="fImg" accept="image/*" style="display:none">
       <div class="r2"><button type="button" class="btn line" id="imgPick">اختر صورة</button><button type="button" class="btn line" id="imgDel">إزالة الصورة</button></div></div>
     <div class="fld"><span>الخيارات، واختر الجواب الصحيح بالدائرة</span>
-    ${[0,1,2,3].map(i=>`<div class="orow"><input type="radio" name="ans" value="${i}" id="r${i}" aria-label="الجواب الصحيح ${LET[i]}" ${(q?q.a:0)===i?'checked':''}><span class="l">${LET[i]}</span><input class="in" id="o${i}" dir="auto" value="${esc(o[i])}"></div>`).join('')}</div>
+    <div id="qos">${o.map((_,i)=>qorow(i)).join('')}</div>
+    <button type="button" class="btn line block" id="qmore" style="${o.length>=6?'display:none':''}">+ خيار إضافي (حتى 6)</button></div>
     <label class="fld"><span>الشرح</span><textarea class="in" id="fX" dir="auto">${esc(q?q.e:'')}</textarea></label>
     <p class="err" id="er" role="alert"></p>
     <div class="r2"><button class="btn" id="sv">حفظ</button>${q?'':'<button class="btn line" id="sv2">حفظ وإضافة آخر</button>'}</div>`);
   $('cl').onclick=closeModal;
   bindMeta();
+  let nOpt=o.length;
+  $('qmore').onclick=()=>{if(nOpt>=6)return;$('qos').insertAdjacentHTML('beforeend',qorow(nOpt));nOpt++;if(nOpt>=6)$('qmore').style.display='none'};
   let pend=null,gone=false;
   const curImg=q?(q.img||null):null;
   function imgPaint(){
@@ -1934,7 +1942,7 @@ function questionForm(id,keep){
     if(!text){$('er').textContent='اكتب نص السؤال.';return}
     const picked=+(document.querySelector('input[name=ans]:checked')||{value:0}).value;
     const opts=[];let a=-1;
-    for(let i=0;i<4;i++){const t=$('o'+i).value.trim();if(t){if(i===picked)a=opts.length;opts.push(t)}}
+    for(let i=0;i<nOpt;i++){const t=$('o'+i).value.trim();if(t){if(i===picked)a=opts.length;opts.push(t)}}
     if(opts.length<2){$('er').textContent='اكتب خيارين على الأقل.';return}
     if(a<0){$('er').textContent='الخيار المحدد كجواب صحيح فارغ. حدد خياراً مكتوباً.';return}
     const data={s:meta.s,sy:meta.sy,ex:meta.ex,y:meta.y,free:meta.free,q:text,o:opts,a:a,e:$('fX').value.trim(),t:q?(q.t||0):Date.now()};
@@ -2118,6 +2126,7 @@ function adminLogin(notice){
     <p class="err" id="er" role="alert"></p>
     <button class="btn block" id="au-go">دخول</button>
   </div>`;
+  ['au-e','au-p'].forEach(id=>{$(id).onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('au-go').click()}}});
   $('au-go').onclick=async()=>{
     const email=$('au-e').value.trim(),password=$('au-p').value;
     if(!email||!password){$('er').textContent='اكتب الإيميل وكلمة السر.';return}

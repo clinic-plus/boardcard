@@ -14,8 +14,43 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const json = (o, s = 200) =>
   new Response(JSON.stringify(o), {
     status: s,
-    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }
   });
+
+// Reads the request body but stops as soon as it passes `max` bytes, so a request without a
+// Content-Length (or with a false one) cannot make the Worker buffer a huge upload in memory.
+// Returns an ArrayBuffer, or null when the body is larger than `max`.
+async function readCapped(req, max) {
+  const len = parseInt(req.headers.get('Content-Length') || '0', 10);
+  if (len > max) return null;
+  if (!req.body) return new ArrayBuffer(0);
+  const rd = req.body.getReader(), parts = [];
+  let n = 0;
+  for (;;) {
+    const { done, value } = await rd.read();
+    if (done) break;
+    n += value.byteLength;
+    if (n > max) { try { await rd.cancel(); } catch (e) {} return null; }
+    parts.push(value);
+  }
+  const out = new Uint8Array(n);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.byteLength; }
+  return out.buffer;
+}
+
+// Optional per-account limit on student-data requests. It works only when a Rate Limiting binding named RL
+// is added to the Worker (see wrangler config); without it this does nothing. Limiting by account (not by IP)
+// means students sharing one mobile-network IP never block each other.
+async function limited(env, id) {
+  try {
+    if (!env.RL) return false;
+    const r = await env.RL.limit({ key: 'u:' + id });
+    return !r.success;
+  } catch (e) {
+    return false;
+  }
+}
 
 // Verifies the Supabase session token; returns {id, h} for any signed-in user.
 async function whoami(req) {
@@ -33,19 +68,24 @@ async function whoami(req) {
   }
 }
 
+// The caller's own profile row ({role, blocked}), or null when it cannot be read.
+async function profileOf(me) {
+  try {
+    const p = await fetch(SB + '/rest/v1/profiles?id=eq.' + me.id + '&select=role,blocked', { headers: me.h });
+    if (!p.ok) return null;
+    const rows = await p.json();
+    return (rows && rows[0]) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
 // Same, and the caller must be a non-blocked admin.
 async function isAdmin(req) {
   const me = await whoami(req);
   if (!me) return false;
-  try {
-    const p = await fetch(SB + '/rest/v1/profiles?id=eq.' + me.id + '&select=role,blocked', { headers: me.h });
-    if (!p.ok) return false;
-    const rows = await p.json();
-    const r = rows && rows[0];
-    return !!r && r.role === 'admin' && !r.blocked;
-  } catch (e) {
-    return false;
-  }
+  const r = await profileOf(me);
+  return !!r && r.role === 'admin' && !r.blocked;
 }
 
 function kind(b) {
@@ -75,11 +115,9 @@ async function img(req, env, url) {
     return json({ ok: true });
   }
 
-  const len = parseInt(req.headers.get('Content-Length') || '0', 10);
-  if (len > MAX_BYTES) return json({ error: 'too_big' }, 413);
-  const buf = await req.arrayBuffer();
+  const buf = await readCapped(req, MAX_BYTES);
+  if (!buf) return json({ error: 'too_big' }, 413);
   if (buf.byteLength === 0) return json({ error: 'empty' }, 400);
-  if (buf.byteLength > MAX_BYTES) return json({ error: 'too_big' }, 413);
   const ext = kind(new Uint8Array(buf, 0, Math.min(16, buf.byteLength)));
   if (!ext) return json({ error: 'bad_type' }, 415);
   const path = newPath(ext);
@@ -100,17 +138,20 @@ async function data(req, env, url) {
     const me = await whoami(req);
     if (!me) return json({ error: 'forbidden' }, 403);
     const key = 'users/' + me.id + '/' + k.file;
+    if (await limited(env, me.id)) return json({ error: 'rate' }, 429);
     if (req.method === 'GET') {
       const o = await env.USERDATA.get(key);
       if (!o) return json({ error: 'none' }, 404);
-      return new Response(o.body, { headers: { 'Content-Type': 'application/gzip', 'Cache-Control': 'no-store' } });
+      return new Response(o.body, { headers: { 'Content-Type': 'application/gzip', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } });
     }
     if (req.method === 'PUT') {
-      const len = parseInt(req.headers.get('Content-Length') || '0', 10);
-      if (len > k.max) return json({ error: 'too_big' }, 413);
-      const buf = await req.arrayBuffer();
+      // A blocked account cannot write. If the profile cannot be read (Supabase hiccup) the write
+      // is allowed, so a student never loses data because of a temporary outage.
+      const pr = await profileOf(me);
+      if (pr && pr.blocked) return json({ error: 'blocked' }, 403);
+      const buf = await readCapped(req, k.max);
+      if (!buf) return json({ error: 'too_big' }, 413);
       if (buf.byteLength < 20) return json({ error: 'empty' }, 400);
-      if (buf.byteLength > k.max) return json({ error: 'too_big' }, 413);
       const b = new Uint8Array(buf, 0, 3);
       if (b[0] !== 0x1f || b[1] !== 0x8b || b[2] !== 0x08) return json({ error: 'bad_type' }, 415);
       await env.USERDATA.put(key, buf, { httpMetadata: { contentType: 'application/gzip' } });
@@ -134,6 +175,7 @@ async function data(req, env, url) {
 
 // Admin-only read access to both buckets, used by the full-backup and usage panel in the admin page.
 async function adminR2(req, env, url) {
+  if (req.method !== 'GET') return json({ error: 'method' }, 405);
   if (!(await isAdmin(req))) return json({ error: 'forbidden' }, 403);
   const b = url.searchParams.get('b');
   const bucket = b === 'img' ? env.IMAGES : b === 'user' ? env.USERDATA : null;
@@ -151,7 +193,7 @@ async function adminR2(req, env, url) {
     if (!okKey) return json({ error: 'bad_key' }, 400);
     const o = await bucket.get(key);
     if (!o) return json({ error: 'none' }, 404);
-    return new Response(o.body, { headers: { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store' } });
+    return new Response(o.body, { headers: { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } });
   }
   return json({ error: 'not_found' }, 404);
 }
@@ -160,7 +202,8 @@ async function adminR2(req, env, url) {
 const CLASS_A = ['ListBuckets','PutBucket','ListObjects','ListObjectsV2','PutObject','CopyObject','CompleteMultipartUpload','CreateMultipartUpload','ListMultipartUploads','UploadPart','UploadPartCopy','PutBucketEncryption','PutBucketCors','PutBucketLifecycleConfiguration','LifecycleStorageTierTransition'];
 async function metrics(req, env) {
   if (!(await isAdmin(req))) return json({ error: 'forbidden' }, 403);
-  if (!env.CF_API_TOKEN) return json({ error: 'dbg', detail: 'Worker sees env: ' + Object.keys(env).join(', ') });
+  // The admin page shows the setup hint for this exact code.
+  if (!env.CF_API_TOKEN) return json({ error: 'no_token' });
   const h = { Authorization: 'Bearer ' + env.CF_API_TOKEN, 'Content-Type': 'application/json' };
   try {
     let acc = env.CF_ACCOUNT_ID;
@@ -199,10 +242,15 @@ async function metrics(req, env) {
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
-    if (url.pathname === '/api/img') return img(req, env, url);
-    if (url.pathname === '/api/data' || url.pathname.startsWith('/api/data/')) return data(req, env, url);
-    if (url.pathname === '/api/admin/metrics') return metrics(req, env);
-    if (url.pathname === '/api/admin/list' || url.pathname === '/api/admin/get') return adminR2(req, env, url);
+    try {
+      if (url.pathname === '/api/img') return await img(req, env, url);
+      if (url.pathname === '/api/data' || url.pathname.startsWith('/api/data/')) return await data(req, env, url);
+      if (url.pathname === '/api/admin/metrics') return await metrics(req, env);
+      if (url.pathname === '/api/admin/list' || url.pathname === '/api/admin/get') return await adminR2(req, env, url);
+    } catch (e) {
+      // An R2 or network failure answers with clean JSON instead of Cloudflare's error page.
+      return json({ error: 'server' }, 500);
+    }
     if (url.pathname.startsWith('/api/')) return json({ error: 'not_found' }, 404);
     return env.ASSETS.fetch(req);
   }

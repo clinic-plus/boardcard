@@ -305,6 +305,8 @@ a.btn{display:flex;align-items:center;justify-content:center;text-decoration:non
 .pal button{min-height:40px;border-radius:12px;border:1px solid var(--glass-brd);background:var(--glass);font-weight:600;font-size:14px;padding:0}
 .pal button.done{background:var(--good-bg);border-color:var(--accent)}
 .pal button.curr{outline:2px solid var(--accent)}
+.pal button.flag::after{content:"";position:absolute;top:4px;inset-inline-end:4px;width:8px;height:8px;border-radius:50%;background:#E0A100}
+.btn.line.flagon{background:var(--gold-bg);color:var(--gold);border-color:#E0A100}
 .xtm{font-variant-numeric:tabular-nums;min-width:64px;text-align:center}
 .xtm.low{background:var(--bad-bg);color:var(--bad);border-color:transparent}
 .xfin{min-height:40px;padding:6px 14px}
@@ -513,6 +515,7 @@ a.btn{display:flex;align-items:center;justify-content:center;text-decoration:non
 </style>
 </head>
 <body>
+<noscript><p style="padding:24px;text-align:center;font-family:Tahoma,sans-serif">يحتاج Boardcard إلى تفعيل JavaScript في المتصفح حتى يعمل.</p></noscript>
 <div class="wrap" id="app"><div class="splash boot0"><div class="logoplate"><img src="logo.png" alt="Boardcard" style="width:190px;max-width:100%;height:auto" onerror="this.parentNode.style.display='none'"></div><p class="hint">جارٍ تحميل الأسئلة…</p></div></div>
 <div id="modal"></div>
 <div id="toast"></div>
@@ -835,15 +838,92 @@ function errMsg(e){
   return 'تعذر تنفيذ العملية. جرب مرة ثانية.';
 }
 function refresh(){if(view==='home')home()}
-function toast(m){const t=$('toast');t.innerHTML=`<div class="toast" role="status">${esc(m)}</div>`;clearTimeout(toast.t);toast.t=setTimeout(()=>{t.innerHTML=''},2600)}
+function toast(m){const t=$('toast');t.innerHTML=`<div class="toast" role="status">${esc(m)}</div>`;clearTimeout(toast.t);toast.t=setTimeout(()=>{t.innerHTML=''},Math.min(8000,Math.max(2600,String(m).length*70)))}
 
 /* ---------- حساب الطالب والجلسة الواحدة ---------- */
 let S={cards:{},log:[],timer:false,days:{},starred:{},exams:[],flash:false,goal:20,badges:{},freezes:1,frozen:{},fzMs:0,annSeen:{},total:0,lbPend:0,resume:null,resumeExam:null,dq:{},exd:{}},SKEY='tibcards_v3';
 function freshS(){return {cards:{},starDel:{},log:[],timer:false,days:{},starred:{},exams:[],flash:false,goal:20,badges:{},freezes:1,frozen:{},fzMs:0,annSeen:{},total:0,lbPend:0,resume:null,resumeExam:null,dq:{},exd:{}}}
-function initS(uid){SKEY='tibcards_v3_'+uid;try{const r=localStorage.getItem(SKEY);S=r?JSON.parse(r):freshS()}catch(e){S=freshS()}if(!S.days)S.days={};if(!S.cards)S.cards={};if(!S.log)S.log=[];if(!S.starred)S.starred={};if(!S.starDel)S.starDel={};if(!S.exams)S.exams=[];if(!S.goal)S.goal=20;if(!S.dq)S.dq={};if(!S.exd)S.exd={};if(!S.badges)S.badges={};if(S.freezes==null)S.freezes=1;if(!S.frozen)S.frozen={};if(!S.fzMs)S.fzMs=0;if(!S.annSeen)S.annSeen={};if(S.lbPend==null)S.lbPend=0;if(S.total==null)S.total=Object.keys(S.days).reduce((t,k)=>t+(S.days[k].n||0),0)}
-function save(){S.pu=Date.now();try{localStorage.setItem(SKEY,JSON.stringify(S))}catch(e){}markP();pushSyncSoon()}
+/* ---------- تخزين بيانات الطالب على الجهاز في IndexedDB ----------
+   التقدم والملاحظات والأسئلة الخاصة كانت في localStorage (حدّه نحو 5 ميغابايت وكتابته تجمّد الصفحة).
+   الآن تُحفظ في IndexedDB بلا حد عملي، وتُنقل النسخة القديمة تلقائياً عند أول فتح ثم تُحذف.
+   إذا لم يتوفر IndexedDB في المتصفح يستمر العمل على localStorage كما كان. */
+let kvP=null;
+function kvOpen(){
+  if(kvP)return kvP;
+  kvP=new Promise(res=>{
+    let done=false;const fin=v=>{if(!done){done=true;res(v)}};
+    try{
+      if(typeof indexedDB==='undefined'||!indexedDB){fin(null);return}
+      const r=indexedDB.open('boardcard-user',1);
+      r.onupgradeneeded=()=>{try{if(!r.result.objectStoreNames.contains('kv'))r.result.createObjectStore('kv')}catch(e){}};
+      r.onsuccess=()=>{
+        const db=r.result;
+        if(done){try{db.close()}catch(e){}return}   // وصل بعد انتهاء المهلة: نبقى على localStorage لهذه الجلسة
+        db.onversionchange=()=>{try{db.close()}catch(e){}kvP=null};
+        db.onclose=()=>{kvP=null};
+        fin(db);
+      };
+      r.onerror=()=>fin(null);r.onblocked=()=>fin(null);
+      setTimeout(()=>fin(null),4000);   // بعض المتصفحات تعلّق عند الفتح: لا ننتظر أكثر من 4 ثوانٍ
+    }catch(e){fin(null)}
+  });
+  return kvP;
+}
+async function kvGet(key){
+  const db=await kvOpen();if(!db)return null;
+  return new Promise(res=>{try{const t=db.transaction('kv'),g=t.objectStore('kv').get(key);g.onsuccess=()=>res(g.result==null?null:g.result);g.onerror=()=>res(null);t.onabort=()=>res(null)}catch(e){res(null)}});
+}
+async function kvSet(key,val){
+  const db=await kvOpen();if(!db)return false;
+  return new Promise(res=>{try{const t=db.transaction('kv','readwrite');t.objectStore('kv').put(val,key);t.oncomplete=()=>res(true);t.onabort=()=>res(false)}catch(e){res(false)}});
+}
+// يقرأ النسختين: [نسخة IndexedDB، النسخة القديمة في localStorage]
+async function uLoad(key){
+  let a=null,b=null;
+  try{a=await kvGet(key)}catch(e){}
+  try{const r=localStorage.getItem(key);if(r)b=JSON.parse(r)}catch(e){}
+  return [a,b];
+}
+// بعد الدمج: تُكتب النتيجة في IndexedDB، ولا تُحذف النسخة القديمة إلا بعد نجاح الكتابة
+function uAdopt(key,val){kvSet(key,val).then(ok=>{if(ok){try{localStorage.removeItem(key)}catch(e){}}})}
+// الحفظ: عدة استدعاءات في نفس اللحظة تُكتب مرة واحدة
+const _uq=new Map();let _uqT=false;
+function uSave(key,val){_uq.set(key,val);if(!_uqT){_uqT=true;Promise.resolve().then(uFlush)}}
+async function uFlush(){
+  _uqT=false;const items=Array.from(_uq);_uq.clear();
+  for(const [k,v] of items){
+    if(await kvSet(k,v))continue;
+    try{localStorage.setItem(k,JSON.stringify(v))}catch(e){lsFull()}   // لا IndexedDB أو فشلت الكتابة
+  }
+}
+const mergeQ=(a,b)=>{const q={};let d=false;[a,b].forEach(r=>{if(!r||!r.q)return;d=d||!!r.d;Object.keys(r.q).forEach(id=>{const x=r.q[id];if(x&&(!q[id]||(x.u||0)>(q[id].u||0)))q[id]=x})});return {q:q,d:d}};
+// نطلب من المتصفح ألا يمسح البيانات تلقائياً (للتطبيق المثبّت فقط حتى لا تظهر نافذة إذن)
+function askPersist(){try{if(navigator.storage&&navigator.storage.persist&&isStandalone())navigator.storage.persist().catch(()=>{})}catch(e){}}
+function normS(){if(!S.days)S.days={};if(!S.cards)S.cards={};if(!S.log)S.log=[];if(!S.starred)S.starred={};if(!S.starDel)S.starDel={};if(!S.exams)S.exams=[];if(!S.goal)S.goal=20;if(!S.dq)S.dq={};if(!S.exd)S.exd={};if(!S.badges)S.badges={};if(S.freezes==null)S.freezes=1;if(!S.frozen)S.frozen={};if(!S.fzMs)S.fzMs=0;if(!S.annSeen)S.annSeen={};if(S.lbPend==null)S.lbPend=0;if(S.total==null)S.total=Object.keys(S.days).reduce((t,k)=>t+(S.days[k].n||0),0)}
+let _sTok=0;
+async function initS(uid){
+  const key='tibcards_v3_'+uid,tok=++_sTok;
+  const [a,b]=await uLoad(key);
+  if(tok!==_sTok)return;
+  const obj=x=>x&&typeof x==='object'&&!Array.isArray(x)?x:null,A=obj(a),B=obj(b);
+  SKEY=key;
+  if(A&&B){   // نسختان (مثلاً جلسة سابقة عملت بدون IndexedDB): الأحدث أساساً ويُدمج فيه الآخر بلا فقدان
+    const nb=(B.pu||0)>(A.pu||0);S=nb?B:A;normS();
+    try{mergeProgress(nb?A:B)}catch(e){}
+  }else S=A||B||freshS();
+  normS();
+  if(B)uAdopt(key,S);
+}
+let _lsWarned=false,_lsT=null;
+function save(){S.pu=Date.now();uSave(SKEY,S);markP();pushSyncSoon()}
+// تعذر الحفظ على الجهاز (المساحة ممتلئة): نرفع التقدم إلى الحساب خلال ثوانٍ بدل الانتظار، وننبه الطالب مرة واحدة
+function lsFull(){
+  if(PU&&!_lsT)_lsT=setTimeout(()=>{_lsT=null;PD=true;pushProgress()},15000);
+  if(_lsWarned)return;_lsWarned=true;
+  toast(PU?'ذاكرة المتصفح ممتلئة، فتقدمك يُحفظ على حسابك مباشرة. لا تغلق الصفحة قبل أن يتصل الإنترنت.':'ذاكرة المتصفح ممتلئة ولم يُحفظ تقدمك على هذا الجهاز.');
+}
 let gT=null;
-function startGuard(){stopGuard();gT=setInterval(()=>{guard();lbFlush();ptFlush()},30000)}
+function startGuard(){stopGuard();gT=setInterval(()=>{if(document.hidden)return;guard();lbFlush();ptFlush()},30000)}
 function stopGuard(){if(gT){clearInterval(gT);gT=null}}
 async function guard(){
   if(!Store.user)return;
@@ -894,11 +974,14 @@ function subscribeModal(notice){
     <h3 class="sec">عندك حساب؟</h3>
     <label class="fld"><span>اسم المستخدم</span><input class="in" id="lg-u" autocomplete="username" autocapitalize="none" spellcheck="false" style="direction:ltr;text-align:left"></label>
     <label class="fld"><span>كلمة السر</span><input class="in" id="lg-p" type="password" autocomplete="current-password" style="direction:ltr;text-align:left"></label>
+    <button type="button" class="lnk" id="lg-sh" style="display:block;font-size:13px;margin:-6px 0 12px">إظهار كلمة السر</button>
     <label class="fld"><span>رمز التفعيل</span><input class="in" id="lg-c" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX" style="direction:ltr;text-align:left;text-transform:uppercase"></label>
     <p class="hint">رمز التفعيل مطلوب عند أول دخول أو عند التجديد. إذا اشتراكك ساري تقدر تتركه فارغاً.</p>
     <p class="err" id="er" role="alert"></p>
     <button class="btn block" id="ac">دخول وتفعيل</button>`);
   $('cl').onclick=closeModal;
+  $('lg-sh').onclick=()=>{const pw=$('lg-p'),on=pw.type==='password';pw.type=on?'text':'password';$('lg-sh').textContent=on?'إخفاء كلمة السر':'إظهار كلمة السر'};
+  ['lg-u','lg-p','lg-c'].forEach(id=>{$(id).onkeydown=e=>{if(e.key==='Enter'&&!e.isComposing){e.preventDefault();$('ac').click()}}});
   $('ac').onclick=async()=>{
     const u=$('lg-u').value,p=$('lg-p').value,c=$('lg-c').value.trim();
     if(!u.trim()||!p){$('er').textContent='اكتب اسم المستخدم وكلمة السر.';return}
@@ -930,7 +1013,7 @@ async function doLogin(username,password,code){
 async function startGuest(notice){
   stopGuard();
   Store.user=null;Store.profile=null;Store.premium=false;Store.subs={};Store.isAdmin=false;
-  initS('guest');initN(null);initP(null);
+  await initS('guest');await initN(null);initP(null);
   try{
     await loadAll();await loadAnn();
     Store.ready=true;Store.err=false;
@@ -963,7 +1046,7 @@ async function startApp(){
     if(ok.data===false){await kick();return}
     await loadMe();
     if(Store.profile.blocked){stopGuard();await cacheDropOwner(Store.user.id);blockedScreen();return}
-    initS(Store.user.id);initN(Store.user.id);initP(Store.user.id);
+    await Promise.all([initS(Store.user.id),initN(Store.user.id)]);initP(Store.user.id);askPersist();
     if(!Store.profile.accepted_terms_at){termsGate();return}
     await loadAll();await loadAnn();
     Store.ready=true;Store.err=false;
@@ -995,13 +1078,16 @@ function unlockScroll(){
   const b=document.body.style;b.position='';b.top='';b.left='';b.right='';b.width='';
   window.scrollTo(0,_sy);
 }
-function showModal(html){modal.innerHTML=`<div class="ov" id="ov"><div class="sheet" role="dialog" aria-modal="true">${html}</div></div>`;lockScroll();$('ov').onclick=e=>{if(e.target.id==='ov')closeModal()}}
-function closeModal(){modal.innerHTML='';unlockScroll()}
+let _mClose=null;
+function showModal(html){_mClose=null;modal.innerHTML=`<div class="ov" id="ov"><div class="sheet" role="dialog" aria-modal="true">${html}</div></div>`;lockScroll();$('ov').onclick=e=>{if(e.target.id==='ov')closeModal()}}
+function closeModal(){const h=_mClose;_mClose=null;modal.innerHTML='';unlockScroll();if(h)h()}
 function askConfirm(title,msg,ok){
   return new Promise(res=>{
     showModal(`<h2>${esc(title)}</h2><p>${esc(msg)}</p><div class="r2"><button class="btn line" id="cn">إلغاء</button><button class="btn bad" id="cy">${esc(ok)}</button></div>`);
-    $('cn').onclick=()=>{closeModal();res(false)};
-    $('cy').onclick=()=>{closeModal();res(true)};
+    let fin=false;const end=v=>{if(fin)return;fin=true;_mClose=null;closeModal();res(v)};
+    _mClose=()=>{if(!fin){fin=true;res(false)}};
+    $('cn').onclick=()=>end(false);
+    $('cy').onclick=()=>end(true);
   });
 }
 
@@ -1322,7 +1408,7 @@ function settingsModal(){
       <button class="sw" id="tm" role="switch" aria-checked="${S.timer}" aria-label="وضع الوقت"></button></div>
     <div class="setting col"><b>المظهر</b><div class="seg" role="group" aria-label="المظهر">${[['auto','تلقائي'],['light','فاتح'],['dark','داكن']].map(([v,t])=>`<button data-th="${v}" aria-pressed="${themePref()===v}">${t}</button>`).join('')}</div></div>
     <div class="setting col"><b>حجم خط الأسئلة</b><div class="seg" role="group" aria-label="حجم الخط">${[['s','صغير'],['m','عادي'],['l','كبير'],['xl','كبير جداً']].map(([v,t])=>`<button data-fs="${v}" aria-pressed="${fsPref()===v}">${t}</button>`).join('')}</div></div>
-    ${pushRowHtml()}
+    ${pushRowHtml()}${kbHintHtml()}
     <div class="acct">${Store.user?`<b>${esc((Store.profile&&(Store.profile.full_name||Store.profile.username))||'حسابك')}</b><br>${Store.premium?'اشتراكك: '+Object.keys(Store.subs).map(id=>esc(spById(id).n)+' حتى '+fdate(Store.subs[id])).join('، '):'لا يوجد اشتراك فعّال'}.<button class="btn line block" id="lo">تسجيل الخروج</button>`:'أنت تتصفح كزائر: الأسئلة المفتوحة للتجربة فقط، واشترك لفتح الباقي.'}</div>`;
     $('tm').onclick=()=>{S.timer=!S.timer;save();paint()};
     box.querySelectorAll('[data-th]').forEach(b=>b.onclick=()=>{setTheme(b.dataset.th);paint()});
@@ -1369,7 +1455,7 @@ const gzip=async str=>{if(typeof CompressionStream==='undefined')return null;ret
 const gunzip=async blob=>await new Response(blob.stream().pipeThrough(new DecompressionStream('gzip'))).text();
 function schedP(){if(!PT)PT=setTimeout(pushProgress,240000)}   // 4 دقائق؛ ويُرفع فوراً عند الخروج من الصفحة
 function markP(){if(PU){PD=true;schedP()}}
-function localRaw(){try{localStorage.setItem(SKEY,JSON.stringify(S))}catch(e){}}
+function localRaw(){uSave(SKEY,S)}
 function initP(uid){
   clearTimeout(PT);PT=null;PD=false;PLast=null;PBusy=false;PU=uid||null;
   if(PU)loadProgressRemote();
@@ -1475,12 +1561,19 @@ async function dataPut(kind,gz,keep){
 }
 const noteOk=c=>!!(Store.user&&Store.subs[qSp(c)]);
 function nKey(){return 'bc_notes_'+NU}
-function nCache(){if(!NU)return;try{localStorage.setItem(nKey(),JSON.stringify({d:ND,q:N.q}))}catch(e){}}
-function initN(uid){
-  clearTimeout(NT);N={q:{}};NU=uid||null;ND=false;initPQ(uid);
-  if(!NU)return;
-  try{const r=JSON.parse(localStorage.getItem(nKey())||'null');if(r&&r.q){N.q=r.q;ND=!!r.d}}catch(e){}
-  loadNotesRemote();
+function nCache(){if(!NU)return;uSave(nKey(),{d:ND,q:N.q})}
+async function initN(uid){
+  clearTimeout(NT);N={q:{}};NU=uid||null;ND=false;
+  const pqP=initPQ(uid);
+  if(NU){
+    const key=nKey(),[a,b]=await uLoad(key);
+    if(NU===uid){
+      const m=mergeQ(a,b);N.q=m.q;ND=m.d;
+      if(b)uAdopt(key,{d:ND,q:N.q});
+      loadNotesRemote();
+    }
+  }
+  await pqP;
 }
 function mergeN(rem){
   Object.keys(rem).forEach(id=>{const a=N.q[id],b=rem[id];if(!b)return;if(!a||(b.u||0)>(a.u||0))N.q[id]=b});
@@ -1540,12 +1633,15 @@ window.addEventListener('pagehide',()=>{pushNotes()});
 const PQ_GZ_MAX=1500000,PQ_QL=1500,PQ_OL=300,PQ_EL=1500;
 let PQ={q:{}},PQU=null,PQD=false,PQT=null,PQV=0,PS=null,PQL=false,PQP=null;
 const pqKey=()=>'bc_pq_'+PQU;
-function pqCache(){if(!PQU)return;try{localStorage.setItem(pqKey(),JSON.stringify({d:PQD,q:PQ.q}))}catch(e){}}
+function pqCache(){if(!PQU)return;uSave(pqKey(),{d:PQD,q:PQ.q})}
 function pqPurge(){const lim=Date.now()-30*864e5;Object.keys(PQ.q).forEach(id=>{const e=PQ.q[id];if(e&&e.x&&(e.u||0)<lim)delete PQ.q[id]})}
-function initPQ(uid){
+async function initPQ(uid){
   clearTimeout(PQT);PQ={q:{}};PQU=uid||null;PQD=false;PS=null;PQL=false;PQP=null;
   if(!PQU)return;
-  try{const r=JSON.parse(localStorage.getItem(pqKey())||'null');if(r&&r.q){PQ.q=r.q;PQD=!!r.d}}catch(e){}
+  const key=pqKey(),[a,b]=await uLoad(key);
+  if(PQU!==uid)return;
+  const m=mergeQ(a,b);PQ.q=m.q;PQD=m.d;
+  if(b)uAdopt(key,{d:PQD,q:PQ.q});
 }
 function pqMerge(rem){
   Object.keys(rem).forEach(id=>{const a=PQ.q[id],b=rem[id];if(!b)return;if(!a||(b.u||0)>(a.u||0))PQ.q[id]=b});
@@ -2350,7 +2446,7 @@ function liveResult(L,d){
   app.innerHTML=`<div class="top"><div class="brand">🔴 نتيجة الامتحان الحي<small>${esc(spn)}</small></div><button class="pill" id="lvb">رجوع</button></div>
   <div class="sum"><div class="big"><bdi dir="ltr">${ar(d.score)} / ${ar(d.n)}</bdi></div><p>الوقت ${fmtT(d.secs)}</p><div id="lvboard"><p class="hint">جارٍ حساب ترتيبك…</p></div><div id="lvshare"></div></div>
   <h3 class="sec">${has?'الأسئلة التي أخطأت بها':'الأسئلة وأجوبتها'} (${ar(wrong.length)})</h3>
-  ${wrong.map(x=>`<details class="panel" style="margin-bottom:8px"><summary dir="${dirOf(x.q.q)}" style="font-weight:600">${esc(x.q.q.length>120?x.q.q.slice(0,120)+'…':x.q.q)}</summary><p dir="${dirOf(x.q.o[x.rv.a])}"><b>الصحيح:</b> ${LET[x.rv.a]}) ${esc(x.q.o[x.rv.a])}</p>${x.rv.e?`<div class="exp" dir="${dirOf(x.rv.e)}"><b>الشرح</b>${fmt(x.rv.e)}</div>`:''}</details>`).join('')||'<div class="empty">لا أخطاء، ممتاز!</div>'}`;
+  ${wrong.map(x=>`<details class="panel" style="margin-bottom:8px"><summary dir="${dirOf(x.q.q)}" style="font-weight:600">${esc(x.q.q.length>120?x.q.q.slice(0,120)+'…':x.q.q)}</summary>${imgHtml(x.q)}<p dir="${dirOf(x.q.o[x.rv.a])}"><b>الصحيح:</b> ${LET[x.rv.a]}) ${esc(x.q.o[x.rv.a])}</p>${x.rv.e?`<div class="exp" dir="${dirOf(x.rv.e)}"><b>الشرح</b>${fmt(x.rv.e)}</div>`:''}</details>`).join('')||'<div class="empty">لا أخطاء، ممتاز!</div>'}`;
   $('lvb').onclick=home;
   liveBoard(L.sp,L.i.id,'lvboard',(my,total)=>{
     const body='🔴 امتحان Boardcard الحي ('+spn+')\nحصلت على '+ar(d.score)+'/'+ar(d.n)+(my?'، المركز '+ar(my.rnk)+' من '+ar(total):'')+'\n⏱ '+fmtT(d.secs)+'\nهل تقدر تتفوق عليّ؟ الجمعة القادمة 8 مساءً';
@@ -2628,12 +2724,17 @@ function runSession(list,mode){
 
 /* ---------- بحث نصي في الأسئلة ---------- */
 let SQ={q:'',sp:''};
-const hiTxt=(t,toks)=>{let h=esc(t);toks.forEach(k=>{const e=esc(k).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');if(e)h=h.replace(new RegExp('('+e+')(?![^<]*>)','gi'),'<mark>$1</mark>')});return h};
+const hiTxt=(t,toks)=>{
+  t=String(t);const ks=toks.map(k=>String(k).replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).filter(Boolean);
+  if(!ks.length)return esc(t);
+  let re;try{re=new RegExp('('+ks.join('|')+')','gi')}catch(e){return esc(t)}
+  return t.split(re).map((x,i)=>i%2?'<mark>'+esc(x)+'</mark>':esc(x)).join('');   // التظليل على النص الأصلي حتى لا تنكسر رموز مثل &amp;
+};
 function searchScreen(){
-  view='search';stopTimer();
   if(!Store.user){toast('البحث متاح للمشتركين. سجّل دخولك بحسابك.');return}
   const sps=Store.isAdmin?spList().map(x=>x.id).filter(x=>x!=='_none'):Object.keys(Store.subs);
   if(!sps.length){toast('البحث متاح لمشتركي Boardcard.');paywall();return}
+  view='search';stopTimer();
   if(!SQ.sp&&F.sp&&sps.includes(F.sp))SQ.sp=F.sp;
   app.innerHTML=`<div class="top"><div class="brand">🔎 بحث في الأسئلة</div><button class="pill" id="sqb">رجوع</button></div>
   <label class="fld"><input class="in" id="sqi" type="search" dir="auto" maxlength="80" placeholder="كلمة أو أكثر من نص السؤال أو الخيارات" value="${esc(SQ.q)}"></label>
@@ -2967,6 +3068,7 @@ function showCard(){
   if(S.timer)startTimer();
 }
 function flip(html){
+  flipAt=Date.now();
   $('backf').innerHTML=tagsHtml(1)+`<p class="q" dir="${dirOf(cur.q)}">${hlHtml(cur,'q')}</p>${imgHtml(cur)}`+toolsHtml(cur)+html;
   $('card').classList.add('flipped');
   bindStars();bindReports();bindAi();bindTools();
@@ -3127,7 +3229,7 @@ function summary(){
   $('again').onclick=()=>sess.mode==='custom'?customTest():sess.mode==='search'?searchScreen():start(sess.subj,sess.sp,sess.sy,{mode:sess.mode});
   const mre=$('more');if(mre)mre.onclick=async()=>{mre.disabled=true;let r;try{r=await sb.rpc('q_more')}catch(e){r={error:{}}}if(r.error){mre.disabled=false;srvErr(r.error);toast(NET_MSG);return}newDayRec().x=(newDayRec().x||0)+10;save();start(sess.subj,sess.sp,sess.sy,{mode:sess.mode})};
   $('hm').onclick=home;
-  const sb=$('sub');if(sb)sb.onclick=paywall;
+  const sbb=$('sub');if(sbb)sbb.onclick=paywall;
 }
 
 /* ---------- الامتحان التجريبي ---------- */
@@ -3185,7 +3287,7 @@ async function examStart(n,per){
     }
   }catch(e){if(!isKick(e)){toast('تعذر تحميل الأسئلة. جرب مرة ثانية.');home()}return}
   if(!qs.length){if(!HY.denied)toast('لا توجد أسئلة مفتوحة بهذا الاختيار.');home();return}
-  X={qs:qs,ans:qs.map(()=>-1),i:0,t0:Date.now(),per:per,limit:qs.length*per,label:examLabel(),tid:null,res:null};
+  X={qs:qs,ans:qs.map(()=>-1),i:0,t0:Date.now(),per:per,limit:qs.length*per,label:examLabel(),tid:null,res:null,flag:{}};
   examShow();
   X.tid=setInterval(examTick,1000);
 }
@@ -3196,7 +3298,7 @@ function examTick(){
   if(el){el.textContent=mmss(left);el.className='pill xtm'+(left<=60?' low':'')}
   if(left<=0)examFinish(true);
 }
-function palHtml(){return X.qs.map((q,i)=>`<button data-p="${i}" class="${X.ans[i]>=0?'done':''}${i===X.i?' curr':''}" aria-label="سؤال ${i+1}">${ar(i+1)}</button>`).join('')}
+function palHtml(){return X.qs.map((q,i)=>`<button data-p="${i}" class="${X.ans[i]>=0?'done':''}${i===X.i?' curr':''}${X.flag[i]?' flag':''}" aria-label="سؤال ${i+1}">${ar(i+1)}</button>`).join('')}
 function examShow(){
   view='exam';stopTimer();saveExamResume();
   const c=X.qs[X.i];cur=c;
@@ -3207,8 +3309,8 @@ function examShow(){
     <span class="pill"><bdi dir="ltr">${ar(X.i+1)} / ${ar(n)}</bdi></span><span class="pill xtm${left<=60?' low':''}" id="xtm">${mmss(left)}</span>
     <button class="btn xfin" id="xf">إنهاء</button></div>
   <div class="scene" style="--sc:${safeC(sub.c)}"><div class="card"><section class="face front" aria-label="السؤال">${tagsHtml()}
-    <p class="q" dir="${dirOf(c.q)}">${fmt(c.q)}</p>${opts}</section></div></div>
-  <div class="acts" style="margin-top:12px"><button class="btn line" id="xp" ${X.i===0?'disabled':''}>السابق</button><button class="btn" id="xnx">${X.i===n-1?'مراجعة الإجابات':'التالي'}</button></div>
+    <p class="q" dir="${dirOf(c.q)}">${fmt(c.q)}</p>${imgHtml(c)}${opts}</section></div></div>
+  <div class="acts" style="margin-top:12px"><button class="btn line" id="xp" ${X.i===0?'disabled':''}>السابق</button><button class="btn line${X.flag[X.i]?' flagon':''}" id="xfl" aria-pressed="${!!X.flag[X.i]}" style="flex:0 0 auto;padding:12px 14px">${X.flag[X.i]?'🚩 معلَّم':'🚩 علّم'}</button><button class="btn" id="xnx">${X.i===n-1?'مراجعة الإجابات':'التالي'}</button></div>
   <div class="pal" id="pal">${palHtml()}</div>`;
   bindStars();
   app.querySelectorAll('.opt').forEach(b=>b.onclick=()=>{
@@ -3219,13 +3321,16 @@ function examShow(){
   $('xp').onclick=()=>{if(X.i>0){X.i--;examShow()}};
   $('xnx').onclick=()=>{if(X.i<n-1){X.i++;examShow()}else examFinishAsk()};
   $('xf').onclick=examFinishAsk;
+  {const fl=$('xfl');fl.onclick=()=>{if(X.flag[X.i])delete X.flag[X.i];else X.flag[X.i]=1;saveExamResume();const on=!!X.flag[X.i];fl.classList.toggle('flagon',on);fl.setAttribute('aria-pressed',on);fl.textContent=on?'🚩 معلَّم':'🚩 علّم';$('pal').innerHTML=palHtml();bindPal()}}
   $('xq').onclick=async()=>{if(await askConfirm('الخروج من الامتحان','ستخسر إجاباتك في هذا الامتحان ولن تُحتسب.','اخرج')){stopExamTimer();X=null;S.resumeExam=null;save();home()}};
   bindPal();
 }
 function bindPal(){app.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>{X.i=+b.dataset.p;examShow()})}
 async function examFinishAsk(){
-  const un=X.ans.filter(a=>a<0).length;
-  const ok=await askConfirm('إنهاء الامتحان',un?`عندك ${ar(un)} ${un===1?'سؤال':'أسئلة'} بدون إجابة. هل تريد الإنهاء؟`:'هل تريد إنهاء الامتحان وعرض النتيجة؟','أنهِ');
+  const un=X.ans.filter(a=>a<0).length,fl=Object.keys(X.flag||{}).length,pp=[];
+  if(un)pp.push(ar(un)+' '+(un===1?'سؤال':'أسئلة')+' بدون إجابة');
+  if(fl)pp.push(ar(fl)+' '+(fl===1?'سؤال معلَّم':'أسئلة معلَّمة')+' للمراجعة');
+  const ok=await askConfirm('إنهاء الامتحان',pp.length?'عندك '+pp.join('، و')+'. هل تريد الإنهاء؟':'هل تريد إنهاء الامتحان وعرض النتيجة؟','أنهِ');
   if(ok)examFinish(false);
 }
 // الأجوبة والشروح تصل من السيرفر دفعة واحدة عند إنهاء الامتحان
@@ -3322,7 +3427,7 @@ function examReview(f){
   const card=it=>{
     const q=it.q,miss=it.a<0;
     const opts=`<ul class="opts">`+q.o.map((t,k)=>{let cls='opt';if(k===q.a)cls+=' good';else if(k===it.a)cls+=' bad';return `<li><div class="${cls}" dir="${dirOf(t)}"><span class="l">${LET[k]}</span><span class="t">${esc(t)}</span></div></li>`}).join('')+`</ul>`;
-    return `<div class="panel rv"><h4>سؤال ${ar(it.i+1)}${starBtn(q)}</h4>${miss?'<p class="miss">لم تجب عن هذا السؤال</p>':''}<p class="q" dir="${dirOf(q.q)}" style="font-size:18px">${fmt(q.q)}</p>${opts}${q.e?`<div class="exp" dir="${dirOf(q.e)}"><b>الشرح</b>${fmt(q.e)}</div>`:''}${aiHtml(q)}${reportLinkHtml(q)}</div>`;
+    return `<div class="panel rv"><h4>سؤال ${ar(it.i+1)}${starBtn(q)}</h4>${miss?'<p class="miss">لم تجب عن هذا السؤال</p>':''}<p class="q" dir="${dirOf(q.q)}" style="font-size:18px">${fmt(q.q)}</p>${imgHtml(q)}${opts}${q.e?`<div class="exp" dir="${dirOf(q.e)}"><b>الشرح</b>${fmt(q.e)}</div>`:''}${aiHtml(q)}${reportLinkHtml(q)}</div>`;
   };
   app.innerHTML=`
   <div class="top"><div class="brand">مراجعة الامتحان<small>${esc(X.label)}</small></div><button class="pill" id="bkR">رجوع</button></div>
@@ -3553,7 +3658,7 @@ function saveExamResume(){
   liveMark(true);
   try{
     if(!X||X.res)return;
-    S.resumeExam={ids:X.qs.map(q=>q.id),ss:Array.from(new Set(X.qs.map(q=>q.s))),ans:X.ans.slice(),i:X.i,t0:X.t0,per:X.per,limit:X.limit,label:X.label,at:Date.now()};
+    S.resumeExam={ids:X.qs.map(q=>q.id),ss:Array.from(new Set(X.qs.map(q=>q.s))),ans:X.ans.slice(),flag:X.flag||{},i:X.i,t0:X.t0,per:X.per,limit:X.limit,label:X.label,at:Date.now()};
     save();
   }catch(e){}
 }
@@ -3585,7 +3690,7 @@ async function resumeNow(){
   }else{
     const x=i.r,qs=got;
     if(qs.length!==x.ids.length){S.resumeExam=null;save();toast('تعذر استئناف الامتحان.');home();return}
-    X={qs:qs,ans:x.ans.slice(),i:Math.min(x.i,qs.length-1),t0:x.t0,per:x.per,limit:x.limit,label:x.label,tid:null,res:null};
+    X={qs:qs,ans:x.ans.slice(),i:Math.min(x.i,qs.length-1),t0:x.t0,per:x.per,limit:x.limit,label:x.label,tid:null,res:null,flag:x.flag||{}};
     if(Math.floor((Date.now()-x.t0)/1000)>=x.limit){examFinish(true);return}
     examShow();X.tid=setInterval(examTick,1000);
   }
@@ -3933,9 +4038,7 @@ function progress(){
   const tot=days.reduce((a,d)=>({n:a.n+d.n,ok:a.ok+d.ok,sec:a.sec+d.sec}),{n:0,ok:0,sec:0});
   const active=days.filter(d=>d.n>0).length;
   const td=S.days[dk(now)]||{n:0,ok:0,sec:0};
-  let streak=0;
-  {let i=(S.days[dk(now)]&&S.days[dk(now)].n>0)?0:1;
-   for(;;i++){const e=S.days[dk(new Date(now.getFullYear(),now.getMonth(),now.getDate()-i))];if(e&&e.n>0)streak++;else break}}
+  const streak=calcStreak();
   const allN=Object.keys(S.days).reduce((t,k)=>t+(S.days[k].n||0),0);
   const pct=(a,b)=>b?Math.round(100*a/b):0;
 
@@ -3953,6 +4056,12 @@ function progress(){
   const subs=Object.keys(agg).map(id=>({id:id,n:agg[id].n,ok:agg[id].ok,p:pct(agg[id].ok,agg[id].n)})).sort((a,b)=>b.n-a.n);
   const weak=subs.filter(x=>x.n>=3).sort((a,b)=>a.p-b.p)[0];
   const live=Object.keys(S.cards).filter(id=>!goneQ(id,S.cards[id])),mastered=live.filter(id=>S.cards[id].box>=3).length,seen=live.length;
+  // المراجعات القادمة: كم سؤالاً يحين موعده كل يوم خلال أسبوع (المتأخر يُحسب على اليوم)
+  const fc=[0,0,0,0,0,0,0];
+  {const d0=new Date(now.getFullYear(),now.getMonth(),now.getDate()).getTime(),nowT=Date.now();
+   live.forEach(id=>{const e=S.cards[id];if(!e||e.due==null)return;if(e.due<=nowT){fc[0]++;return}const d=Math.floor((e.due-d0)/864e5);if(d>=0&&d<7)fc[d]++})}
+  const fmx=Math.max(1,...fc);
+  const fcHtml=seen?`<h3 class="sec">المراجعات القادمة</h3><div class="panel"><div class="chart">`+fc.map((v,i)=>{const dt=new Date(now.getFullYear(),now.getMonth(),now.getDate()+i);return `<div class="col${i===0?' today':''}"><span class="val">${v?ar(v):''}</span><div class="bw"><i style="height:${Math.max(v?4:2,Math.round(100*v/fmx))}%"></i></div><em>${i===0?'اليوم':WDS[dt.getDay()]}</em></div>`}).join('')+`</div></div><p class="hint" style="margin:6px 2px 0">عدد الأسئلة التي يحين موعد مراجعتها كل يوم خلال أسبوع، حتى توزّع وقتك.</p>`:'';
 
   const rows=days.slice().reverse().filter(d=>d.n>0).map(d=>{
     const dt=dfk(d.k);
@@ -3977,6 +4086,7 @@ function progress(){
   <div class="panel">${chart(days.map(d=>d.n),v=>ar(v))}</div>
   <h3 class="sec">وقت الدراسة يومياً (بالدقائق)</h3>
   <div class="panel">${chart(days.map(d=>Math.round(d.sec/60)),v=>ar(v))}</div>
+  ${fcHtml}
   ${weak&&weak.p<70?`<div class="banner" style="margin-top:12px">أضعف مادة: ${esc(subjOf(weak.id).n)} (${ar(weak.p)}% صح). راجعها أكثر.</div>`:''}
   <button class="btn line block" id="msb" style="margin:12px 0">📤 ملخص آخر 30 يوماً للمشاركة</button>
   <h3 class="sec">حسب المادة</h3>
@@ -3988,7 +4098,7 @@ function progress(){
   <div class="badges">${BADGES.map(b=>`<div class="bd${S.badges[b.id]?' on':''}"${S.badges[b.id]?` data-bsh="${b.id}" role="button" tabindex="0"`:''}><div class="bg">${b.g}</div><b>${b.t}</b><small>${S.badges[b.id]?fdate(S.badges[b.id]):b.d}</small></div>`).join('')}</div>
   <h3 class="sec">الامتحانات التجريبية</h3>
   ${S.exams.length?`<div class="panel">${S.exams.slice(0,5).map(x=>{const d=new Date(x.t);return `<div class="rep"><span>${ar(d.getDate()+'/'+(d.getMonth()+1))}</span><span>${ar(Math.round(100*x.ok/x.n))}%</span><span><bdi dir="ltr">${ar(x.ok)} / ${ar(x.n)}</bdi></span><span>${fmtT(x.sec)}</span></div>`}).join('')}</div>`:'<div class="empty">ما أجريت امتحاناً تجريبياً بعد.</div>'}
-  <p class="note">أتقنت ${ar(mastered)} من ${ar(seen)} سؤال تعاملت معه. الإحصائيات محفوظة على هذا الجهاز.</p>`;
+  <p class="note">أتقنت ${ar(mastered)} من ${ar(seen)} سؤال تعاملت معه. ${Store.user?'تقدمك محفوظ على حسابك ويظهر على أي جهاز تدخل منه.':'الإحصائيات محفوظة على هذا الجهاز فقط.'}</p>`;
   $('bkP').onclick=home;
   $('msb').onclick=monthSummary;
   $('shprog').onclick=()=>shareCard('stats');
@@ -4014,6 +4124,7 @@ const NAV={last:null,pop:false};
 const navKey=()=>{if(view==='boot'||view==='examwait')return null;return view+(view==='home'?'|'+(F.sp||'')+'|'+(F.sj||''):'')};
 const navPush=()=>{try{history.pushState({bc:1},'')}catch(e){}};
 function navBack(){
+  {const z=document.querySelector('.zoomv');if(z){z.remove();return}}
   if(modal.innerHTML.trim()){closeModal();return}
   if(view==='home'){if(F.sj){F.sj=null;home();return}if(F.sp){F.sp=null;home();return}return}
   for(const id of ['bk','dqx','xq','chh','lvb','sqb','dqh','bkR','pqx','pqb','pqback']){const el=$(id);if(el){el.click();return}}
@@ -4037,6 +4148,62 @@ try{
     if(hadModal||(after===before&&!atRoot))navPush();
   });
 }catch(e){}
+
+/* ---------- تنبيه انقطاع الإنترنت وعودته ---------- */
+if(window.addEventListener){
+  window.addEventListener('offline',()=>toast('انقطع الاتصال بالإنترنت. عرض الأجوبة يحتاج اتصالاً.'));
+  window.addEventListener('online',()=>{
+    if(Store.err&&!Store.ready){location.reload();return}
+    toast('عاد الاتصال بالإنترنت.');
+    try{pushProgress();pushNotes();pushPQ()}catch(e){}
+  });
+}
+
+/* ---------- اختصارات لوحة المفاتيح (للحاسوب) ----------
+   A-F أو 1-6: اختيار الجواب · المسافة/Enter: عرض الجواب أو التالي · 1-4: التقييم بعد الجواب · الأسهم: التنقل في الامتحان · Esc: إغلاق النافذة */
+let flipAt=0;
+const kbHintHtml=()=>{try{return window.matchMedia&&matchMedia('(hover:hover) and (pointer:fine)').matches?'<p class="hint" style="margin:12px 2px 0">اختصارات لوحة المفاتيح: <bdi dir="ltr">A-F</bdi> أو <bdi dir="ltr">1-6</bdi> لاختيار الجواب، المسافة لعرض الجواب أو السؤال التالي، <bdi dir="ltr">1-4</bdi> للتقييم، والأسهم للتنقل في الامتحان.</p>':''}catch(e){return ''}};
+document.addEventListener('keydown',e=>{
+  if(e.defaultPrevented||e.ctrlKey||e.metaKey||e.altKey||e.isComposing)return;
+  const t=e.target,tg=(t&&t.tagName)||'';
+  if(e.key==='Escape'){
+    const z=document.querySelector('.zoomv');if(z){z.remove();return}
+    if(modal.innerHTML.trim())closeModal();
+    return;
+  }
+  if(e.repeat||tg==='INPUT'||tg==='TEXTAREA'||tg==='SELECT'||(t&&t.isContentEditable)||modal.innerHTML.trim()||document.querySelector('.zoomv'))return;
+  // نعتمد موضع المفتاح (code) حتى تعمل الاختصارات والكيبورد على العربية
+  const code=e.code||'',mL=/^Key([A-F])$/.exec(code),mD=/^(?:Digit|Numpad)([1-6])$/.exec(code);
+  const li=mL?mL[1].charCodeAt(0)-65:-1,di=mD?+mD[1]-1:(/^[1-6]$/.test(e.key)?+e.key-1:-1);
+  const pickI=li>=0?li:di,go=e.key===' '||e.key==='Enter';
+  if(go&&(tg==='BUTTON'||tg==='A'||tg==='SUMMARY'))return;   // العنصر المحدَّد يستجيب وحده
+  const hit=el=>{if(!el||el.disabled)return false;e.preventDefault();el.click();return true};
+  const opt=i=>hit(app.querySelectorAll('button.opt')[i]);
+  if(view==='study'){
+    if(!answered){if(pickI>=0)opt(pickI);else if(go)hit($('rv'));return}
+    if(Date.now()-flipAt<500)return;   // حتى لا تُحسب ضغطة الاختيار نفسها تقييماً
+    if(di>=0&&di<4){hit(app.querySelector('.back [data-g="'+(di+1)+'"]'));return}
+    if(go)hit($('nx')||app.querySelector('.back [data-g="3"]'));
+    return;
+  }
+  if(view==='dq'){if(!answered){if(pickI>=0)opt(pickI)}else if(go)hit($('dqn'));return}
+  if(view==='exam'){
+    if(pickI>=0){opt(pickI);return}
+    if(e.key==='ArrowLeft'){if(X&&X.i<X.qs.length-1)hit($('xnx'));return}
+    if(e.key==='ArrowRight')hit($('xp'));
+    return;
+  }
+  if(view==='liverun'){
+    if(pickI>=0){opt(pickI);return}
+    if(e.key==='ArrowLeft')hit($('lvn2'));else if(e.key==='ArrowRight')hit($('lvp'));
+    return;
+  }
+  if(view==='pqstudy'){
+    if(app.querySelector('button.opt')){if(pickI>=0)opt(pickI);return}
+    if(di>=0&&di<4&&hit(app.querySelector('[data-g="'+(di+1)+'"]')))return;
+    if(go)hit($('pqshow')||$('pqn'));
+  }
+});
 
 startApp();
 </script>
