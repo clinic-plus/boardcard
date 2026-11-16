@@ -42,7 +42,7 @@ function newDayRec(){const k=dk(new Date());if(!S.newDay||S.newDay.d!==k)S.newDa
 const newRemain=()=>{const L=newLimit();if(!L)return Infinity;const r=newDayRec();return Math.max(0,L+(r.x||0)-r.n)};
 const isSusp=id=>!!(S.susp&&S.susp[id]>0);
 const isDueC=(id,now)=>{const e=S.cards[id];return !e||e.due==null||e.due<=now};   // جديدة أو حان موعدها
-const ar=n=>String(n).replace(/\d/g,d=>'0123456789'[d]);
+const ar=n=>esc(String(n).replace(/\d/g,d=>'0123456789'[d]));   // الناتج يدخل HTML مباشرة، فيُهرَّب دائماً
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const dirOf=t=>{const m=String(t==null?'':t).match(/[A-Za-z\u0600-\u06FF]/);return m&&/[\u0600-\u06FF]/.test(m[0])?'rtl':'ltr'};
 const EXL={Competitive:'تنافسي',Board:'بورد'};const exL=v=>EXL[v]||v;
@@ -190,7 +190,8 @@ const QUOTA_MSG='وصلت اليوم إلى الحد الأقصى من الأس�
 const NET_MSG='عرض الجواب يحتاج اتصالاً بالإنترنت. تأكد من الشبكة وجرّب مرة ثانية.';
 const isKick=e=>!!e&&/session_replaced/.test(String(e.message||''));
 function srvErr(e){if(isKick(e)){kick();return true}return false}
-const freeSubjects=()=>Array.from(new Set(Store.counts.filter(g=>g.free).map(g=>g.s)));
+let _fsC=null,_fsV=[];
+const freeSubjects=()=>{if(_fsC!==Store.counts){_fsC=Store.counts;_fsV=Array.from(new Set(Store.counts.filter(g=>g.free).map(g=>g.s)))}return _fsV};
 // فهرس المواد: معرّفات الأسئلة فقط بدون أي نص. يُحفظ على الجهاز، والسيرفر لا يعيد إرساله إلا إذا تغيّرت المادة
 async function ensureIndex(ids,onFetch){
   const miss=Array.from(new Set(ids)).filter(id=>!Store.idxS[id]);
@@ -425,6 +426,8 @@ async function kick(){
 }
 async function logout(){
   const uid=Store.user&&Store.user.id;
+  // قبل الخروج: نرفع ما لم يُرفع بعد (التقدم والملاحظات والأسئلة الخاصة) حتى يجده الطالب على أي جهاز آخر، بمهلة 5 ثوانٍ
+  try{PD=PD||!!PU;await Promise.race([Promise.all([pushProgress(),pushNotes(),pushPQ()]),new Promise(r=>setTimeout(r,5000))])}catch(e){}
   try{await pushDisable()}catch(e){}
   stopGuard();stopExamTimer();resetStore();await cacheDropOwner(uid);
   try{await sb.auth.signOut({scope:'local'})}catch(e){}
@@ -496,6 +499,20 @@ async function doLogin(username,password,code){
   // بدون رمز: المشترك المنتهي اشتراكه يدخل أيضاً، ويرى شاشة التجديد داخل التطبيق
   return null;
 }
+async function adoptGuest(){
+  try{
+    const uid=Store.user&&Store.user.id;if(!uid||lsGet('bc_gmig_'+uid))return;
+    const [a,b]=await uLoad('tibcards_v3_guest');
+    const ok=x=>x&&typeof x==='object'&&!Array.isArray(x)&&x.cards&&Object.keys(x.cards).length;
+    const gs=[a,b].filter(ok);
+    lsSet('bc_gmig_'+uid,'1');
+    if(!gs.length)return;
+    gs.forEach(g=>{try{mergeProgress(g)}catch(e){}});
+    normS();save();
+    uSave('tibcards_v3_guest',freshS());
+    toast('نُقل تقدّمك كزائر إلى حسابك');
+  }catch(e){}
+}
 async function startGuest(notice){
   stopGuard();
   Store.user=null;Store.profile=null;Store.premium=false;Store.subs={};Store.isAdmin=false;
@@ -532,7 +549,7 @@ async function startApp(){
     if(ok.data===false){await kick();return}
     await loadMe();
     if(Store.profile.blocked){stopGuard();await cacheDropOwner(Store.user.id);blockedScreen();return}
-    await Promise.all([initS(Store.user.id),initN(Store.user.id)]);initP(Store.user.id);askPersist();
+    await Promise.all([initS(Store.user.id),initN(Store.user.id)]);await adoptGuest();initP(Store.user.id);askPersist();
     if(!Store.profile.accepted_terms_at){termsGate();return}
     await loadAll();await loadAnn();
     Store.ready=true;Store.err=false;
@@ -819,7 +836,7 @@ function home(){
   const title=sj?esc(sj.n):(sp?esc(sp.n):brandHtml());
   const subt=sj?'اختر النظام':(sp?'اختر المادة':(Store.user?[esc((Store.profile&&Store.profile.full_name)||''),(S.total||0)>=LEVELS[1][0]?'🎖 '+levelInfo().name:''].filter(Boolean).join(' · '):'تجربة مجانية'));
   const top=!sp;
-  const mc=modeCounts(),weak=top?weakSubject():null;
+  const weak=top?weakSubject():null,mAll=top?masteredAll():0;
   app.innerHTML=`<i class="hm${_anim?' an':''}" hidden></i>
   <div class="top">
     <div class="brand">${title}<small>${subt}</small></div>
@@ -835,7 +852,7 @@ function home(){
   ${top?`<section class="hero" aria-label="اليوم">${goalHtml()}<div class="stats tap" id="stbtn" role="button" tabindex="0" aria-label="تقرير التقدم">
     <div class="stat"><b data-cnt="${dueN}" data-cm="1" data-dl="280">${ar(cm(dueN))}</b><span>مستحق للمراجعة</span></div>
     <div class="stat"><b ${acc===null?'':`data-cnt="${acc}" data-suf="%" data-dl="360"`}>${acc===null?'—':ar(acc)+'%'}</b><span>نسبة الصح</span></div>
-    <div class="stat"><b data-cnt="${masteredAll()}" data-cm="1" data-dl="440">${ar(cm(masteredAll()))}</b><span>سؤال أتقنته</span></div>
+    <div class="stat"><b data-cnt="${mAll}" data-cm="1" data-dl="440">${ar(cm(mAll))}</b><span>سؤال أتقنته</span></div>
   </div><button class="btn block" id="go">ابدأ مراجعة اليوم</button></section>`
   :`<button class="btn block" id="go">${sj?'ابدأ مراجعة '+esc(sj.n):'ابدأ مراجعة '+esc(sp.n)}${dueN?' ('+ar(dueN)+' مستحق)':''}</button>`}
   ${weak&&weak.p<80?`<button class="btn line block" id="weak" style="margin-top:8px">راجع أضعف مادة: ${esc(subjOf(weak.id).n)} (${ar(weak.p)}%)</button>`:''}
@@ -1992,11 +2009,12 @@ function liveShow(){
   tId=setInterval(()=>{const l=Math.max(0,Math.round((LR.end-Date.now())/1000)),el=$('lvt');if(el){el.textContent=mmss(l);el.classList.toggle('low',l<=60)}if(l<=0){stopTimer();liveSubmit()}},1000);
 }
 async function liveSubmit(){
-  stopTimer();const L=LR;if(!L)return;
+  stopTimer();const L=LR;if(!L||L.sending)return;
+  L.sending=true;if(modal.innerHTML.trim())closeModal();
   loadingScreen('جارٍ تسليم الامتحان…');
   const ans=L.qs.map((q,k)=>L.ans[k]==null?-1:L.ans[k]);
   let r;try{r=await rpc('live_submit',{p_id:L.i.id,p_player:pkey(),p_answers:ans})}catch(e){r={error:{}}}
-  if(r.error||!r.data){toast(msgOf(r.error,{already_done:'سُلّم هذا الامتحان مسبقاً.',not_started:'لم يبدأ امتحانك.'}));await liveLoad(L.sp,true);renderLive(L.sp);return}
+  if(r.error||!r.data){L.sending=false;toast(msgOf(r.error,{already_done:'سُلّم هذا الامتحان مسبقاً.',not_started:'لم يبدأ امتحانك.'}));await liveLoad(L.sp,true);renderLive(L.sp);return}
   const d=r.data;lsSet('bc_lv_'+L.i.id,'[]');lsSet('bc_lvans_'+L.i.id,JSON.stringify(ans));
   if(d.pending){await liveLoad(L.sp,true);liveWait(L,d);return}
   try{L.qs.forEach((q,k)=>{const rv=d.review.find(x=>x.id===q.id);dqRecord({id:q.id,s:q.s,sy:q.sy,ex:undefined},!!rv&&rv.a===ans[k],0)})}catch(e){}
@@ -2969,6 +2987,7 @@ async function examFinishAsk(){
 // الأجوبة والشروح تصل من السيرفر دفعة واحدة عند إنهاء الامتحان
 async function examFinish(timeout){
   if(!X||X.res||X.busy)return;
+  if(timeout&&modal.innerHTML.trim())closeModal();   // انتهى الوقت ونافذة التأكيد مفتوحة
   stopExamTimer();
   const x=X;
   if(!x.fin)x.fin={timeout:!!timeout,elapsed:Math.min(x.limit,Math.floor((Date.now()-x.t0)/1000))};
@@ -3172,7 +3191,8 @@ function annHtml(){
   }).join('');
 }
 /* الإعلانات الممولة: مشاهدة واحدة لكل جهاز في اليوم، وكل ضغطة تُحسب */
-function adEvent(id,kind){try{sb.rpc('ad_event',{p_id:id,p_kind:kind}).then(()=>{},()=>{})}catch(e){}}
+function adDev(){let d=lsGet('bc_dev');if(!/^[A-Za-z0-9_-]{8,64}$/.test(d||'')){try{const u=new Uint8Array(16);crypto.getRandomValues(u);d=Array.from(u,x=>x.toString(36).padStart(2,'0')).join('')}catch(e){d='d'+Date.now().toString(36)+Math.random().toString(36).slice(2,10)}lsSet('bc_dev',d)}return d}
+function adEvent(id,kind){try{sb.rpc('ad_event',{p_id:id,p_kind:kind,p_dev:adDev()}).then(()=>{},()=>{})}catch(e){}}
 function adTrack(){
   const day=dqDay();
   app.querySelectorAll('[data-adv]').forEach(el=>{
@@ -3220,12 +3240,19 @@ if(window.addEventListener){
   window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstall=e;if(view==='home')home()});
   window.addEventListener('appinstalled',()=>{deferredInstall=null;lsSet('bc_inst_hide','1');if(view==='home')home()});
 }
+if('serviceWorker' in (navigator||{})&&navigator.serviceWorker.addEventListener){
+  navigator.serviceWorker.addEventListener('message',e=>{
+    try{const h=e.data&&e.data.type==='open'&&String(e.data.hash||'');
+      if(!h||!/^#(dq|ch-|pt-|live-)/.test(h)||!Store.ready||view!=='home')return;
+      location.hash=h;dqDeep()}catch(x){}
+  });
+}
 if('serviceWorker' in (navigator||{})&&window.addEventListener){
   window.addEventListener('load',()=>{try{navigator.serviceWorker.register('sw.js').catch(()=>{})}catch(e){}});
 }
 
 /* ---------- إصدار الموقع + تسجيل الأخطاء + إشعار التحديث ---------- */
-const BUILD='2026-11-16.5';
+const BUILD='2026-11-17.2';
 const ERR={n:0,seen:{}};
 function errHash(s){let h=5381;for(let i=0;i<s.length;i++)h=((h<<5)+h+s.charCodeAt(i))|0;return (h>>>0).toString(36)}
 /* يرسل الخطأ إلى قاعدة البيانات: نفس الخطأ مرة واحدة لكل جلسة وبحد أقصى 5 أخطاء، وأخطاء الشبكة لا تُحسب */
@@ -3824,7 +3851,7 @@ function progress(){
   <h3 class="sec">الشارات</h3>
   <div class="badges">${BADGES.map(b=>`<div class="bd${S.badges[b.id]?' on':''}"${S.badges[b.id]?` data-bsh="${b.id}" role="button" tabindex="0"`:''}><div class="bg">${b.g}</div><b>${b.t}</b><small>${S.badges[b.id]?fdate(S.badges[b.id]):b.d}</small></div>`).join('')}</div>
   <h3 class="sec">الامتحانات التجريبية</h3>
-  ${S.exams.length?`<div class="panel">${S.exams.slice(0,5).map(x=>{const d=new Date(x.t);return `<div class="rep${x.ids?' rx':''}"><span>${ar(d.getDate()+'/'+(d.getMonth()+1))}</span><span>${ar(Math.round(100*x.ok/x.n))}%</span><span><bdi dir="ltr">${ar(x.ok)} / ${ar(x.n)}</bdi></span><span>${fmtT(x.sec)}</span>${x.ids?`<button class="ib" data-exr="${x.t}">مراجعة</button>`:''}</div>`}).join('')}</div>`:'<div class="empty">ما أجريت امتحاناً تجريبياً بعد.</div>'}
+  ${S.exams.length?`<div class="panel">${S.exams.slice(0,5).map(x=>{const d=new Date(x.t);return `<div class="rep${x.ids?' rx':''}"><span>${ar(d.getDate()+'/'+(d.getMonth()+1))}</span><span>${ar(Math.round(100*x.ok/x.n))}%</span><span><bdi dir="ltr">${ar(x.ok)} / ${ar(x.n)}</bdi></span><span>${fmtT(x.sec)}</span>${x.ids?`<button class="ib" data-exr="${esc(x.t)}">مراجعة</button>`:''}</div>`}).join('')}</div>`:'<div class="empty">ما أجريت امتحاناً تجريبياً بعد.</div>'}
   <p class="note">أتقنت ${ar(mastered)} من ${ar(seen)} سؤال تعاملت معه. ${Store.user?'تقدمك محفوظ على حسابك ويظهر على أي جهاز تدخل منه.':'الإحصائيات محفوظة على هذا الجهاز فقط.'}</p>`;
   $('bkP').onclick=home;
   app.querySelectorAll('[data-exr]').forEach(b=>b.onclick=()=>examReopen(+b.dataset.exr));

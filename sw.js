@@ -53,7 +53,12 @@ self.addEventListener('fetch', e => {
   if (/\.(js|css)$/i.test(u.pathname) && (u.search.indexOf('v=') > -1 || u.pathname.indexOf('/vendor/') > -1)) {
     e.respondWith(
       caches.match(r).then(hit => hit || fetch(r).then(res => {
-        if (res.ok && res.type === 'basic') { const copy = res.clone(); keep(e, caches.open(V).then(c => c.put(r, copy))); }
+        if (res.ok && res.type === 'basic') {
+          const copy = res.clone();
+          // The new version is saved, then older versions of the same file are removed so the cache does not grow with every update.
+          keep(e, caches.open(V).then(c => c.put(r, copy).then(() => c.keys()).then(ks => Promise.all(
+            ks.filter(k => { const ku = new URL(k.url); return ku.pathname === u.pathname && ku.search !== u.search; }).map(k => c.delete(k))))));
+        }
         return res;
       }))
     );
@@ -104,7 +109,10 @@ self.addEventListener('notificationclick', e => {
   e.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
       for (const c of list) {
-        if (c.url.indexOf(scope) === 0 && 'focus' in c) return c.focus();
+        if (c.url.indexOf(scope) === 0 && 'focus' in c) {
+          try { const h = new URL(target).hash; if (h) c.postMessage({ type: 'open', hash: h }); } catch (x) {}
+          return c.focus();
+        }
       }
       return self.clients.openWindow(target);
     })

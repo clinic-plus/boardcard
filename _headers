@@ -7,7 +7,16 @@
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
 
 # The service worker must always be re-checked so updates reach students quickly.
 /sw.js
   Cache-Control: no-cache
+
+# The admin panel is never stored by browsers or shown by search engines.
+/admin.html
+  Cache-Control: no-store
+  X-Robots-Tag: noindex, nofollow
+/admin.js
+  Cache-Control: no-cache
+  X-Robots-Tag: noindex, nofollow

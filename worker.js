@@ -129,6 +129,8 @@ async function isAdmin(req) {
   try {
     const t = bearer(req);
     if (!t) return false;
+    // A forged or expired token is refused here, so junk requests to the admin routes never reach Supabase.
+    if ((await verifyLocal(t)) === null) return false;
     const r = await fetch(SB + '/rest/v1/rpc/is_admin', { method: 'POST', headers: rpcH(t), body: '{}' });
     if (!r.ok) return false;
     return (await r.json()) === true;
