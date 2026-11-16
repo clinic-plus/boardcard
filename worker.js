@@ -160,7 +160,7 @@ async function adminR2(req, env, url) {
 const CLASS_A = ['ListBuckets','PutBucket','ListObjects','ListObjectsV2','PutObject','CopyObject','CompleteMultipartUpload','CreateMultipartUpload','ListMultipartUploads','UploadPart','UploadPartCopy','PutBucketEncryption','PutBucketCors','PutBucketLifecycleConfiguration','LifecycleStorageTierTransition'];
 async function metrics(req, env) {
   if (!(await isAdmin(req))) return json({ error: 'forbidden' }, 403);
-  if (!env.CF_API_TOKEN) return json({ error: 'no_token' });
+  if (!env.CF_API_TOKEN) return json({ error: 'dbg', detail: 'Worker sees env: ' + Object.keys(env).join(', ') });
   const h = { Authorization: 'Bearer ' + env.CF_API_TOKEN, 'Content-Type': 'application/json' };
   try {
     let acc = env.CF_ACCOUNT_ID;
