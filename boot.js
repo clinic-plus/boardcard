@@ -1,0 +1,4 @@
+try{var _t=localStorage.getItem('bc_theme');if(_t==='dark'||_t==='light')document.documentElement.setAttribute('data-theme',_t);var _f=localStorage.getItem('bc_fs');if(_f&&_f!=='m')document.documentElement.setAttribute('data-fs',_f)}catch(e){}
+document.addEventListener('error',function(e){var t=e.target;if(t&&t.tagName==='IMG'&&t.getAttribute){var m=t.getAttribute('data-fb');if(m==='p'&&t.parentNode)t.parentNode.style.display='none';else if(m==='s')t.style.display='none'}},true);
+document.addEventListener('click',function(e){var t=e.target;if(t&&t.closest&&t.closest('[data-reload]'))location.reload()});
+setTimeout(function(){var a=document.getElementById("app");if(a&&a.querySelector(".boot0")){a.innerHTML='<div class="splash"><p class="err">تعذر تحميل الصفحة. تحقق من الإنترنت.</p><button class="btn" data-reload="1">إعادة المحاولة</button></div>'}},12000)

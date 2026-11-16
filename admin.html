@@ -309,7 +309,8 @@ h3.sec{margin:20px 0 8px;font-size:17px}
 <div id="toast"></div>
 
 <script>setTimeout(function(){var a=document.getElementById("app");if(a&&a.querySelector(".boot0")){a.innerHTML='<div class="splash"><p class="err">تعذر تحميل الصفحة. تحقق من الإنترنت.</p><button class="btn" onclick="location.reload()">إعادة المحاولة</button></div>'}},12000)</script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="vendor/supabase-2.45.4.js"></script>
+<script>window.supabase||document.write('<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"><\/script>')</script>
 <script>window.supabase||document.write('<script src="https://unpkg.com/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"><\/script>')</script>
 <script>
 const SB_URL='https://qiejgpvawhxzqmxdjmbd.supabase.co';
@@ -604,6 +605,8 @@ function admin(){
       <div class="card"><h3>تخزين R2</h3><p class="cap">صور الأسئلة وبيانات الطلاب (ملاحظات، أسئلة خاصة، تقدم)</p><div id="uvr2"><p class="hint">جارٍ القراءة…</p></div><div id="cfm"></div></div></div>`;
   }else if(A.tab==='stats'){
     body=`<div id="stbox"><p class="hint">جارٍ حساب الأرقام…</p></div>`;
+  }else if(A.tab==='errors'){
+    body=`<p class="hint">أخطاء برمجية حدثت في أجهزة الطلاب. كل نوع خطأ يظهر مرة واحدة مع عدد مراته. إذا ظهر خطأ جديد بعد تحديث، فالتحديث غالباً هو السبب.</p><div class="r2" style="margin-bottom:10px"><button class="btn line" id="erl">⟳ تحديث</button><button class="btn line" id="erc">مسح الكل</button></div><div id="erlist"><p class="hint">جارٍ التحميل…</p></div>`;
   }else if(A.tab==='trash'){
     body=`<p class="hint">أي أسئلة تُحذف (حتى لو حُذفت مادتها بالكامل) تبقى هنا 30 يوماً ويمكنك استرجاعها.</p><div id="trlist"><p class="hint">جارٍ التحميل…</p></div>`;
   }else if(A.tab==='lb'){
@@ -628,7 +631,7 @@ function admin(){
       <button class="btn block" id="asv">نشر الإعلان</button>`)+`
       <h3 class="sec">الإعلانات السابقة</h3><div id="annlist"><p class="hint">جارٍ التحميل…</p></div>`;
   }else{
-    body=`<button class="btn block" id="newStu">+ حساب طالب جديد</button><button class="btn line block" id="chkRef" style="margin-top:8px">🔎 التحقق من كود إحالة (لتحديد الخصم)</button><input class="in" id="fu" placeholder="بحث بالاسم أو اسم المستخدم" value="${esc(A.fu)}" style="margin:12px 0 8px"><div class="seg" role="group" aria-label="تصفية" style="margin:0 0 12px"><button data-fx="all" aria-pressed="${A.fx==='all'}">الكل</button><button data-fx="soon" aria-pressed="${A.fx==='soon'}">ينتهي خلال 7 أيام</button><button data-fx="ended" aria-pressed="${A.fx==='ended'}">منتهي</button></div><div id="ulist"><p class="hint">جارٍ التحميل…</p></div>`;
+    body=`<button class="btn block" id="newStu">+ حساب طالب جديد</button><button class="btn line block" id="chkRef" style="margin-top:8px">🔎 التحقق من كود إحالة (لتحديد الخصم)</button><button class="btn line block" id="expU" style="margin-top:8px">⬇ تصدير قائمة الطلاب (CSV)</button><input class="in" id="fu" placeholder="بحث بالاسم أو اسم المستخدم" value="${esc(A.fu)}" style="margin:12px 0 8px"><div class="seg" role="group" aria-label="تصفية" style="margin:0 0 12px"><button data-fx="all" aria-pressed="${A.fx==='all'}">الكل</button><button data-fx="soon" aria-pressed="${A.fx==='soon'}">ينتهي خلال 7 أيام</button><button data-fx="ended" aria-pressed="${A.fx==='ended'}">منتهي</button></div><div id="ulist"><p class="hint">جارٍ التحميل…</p></div>`;
   }
   app.innerHTML=`
   <div class="top"><div class="brand">لوحة التحكم<small>${ar(Store.specialties.length)} اختصاص، ${ar(Store.subjects.length)} مادة، ${ar(cntTotal())} سؤال</small></div>
@@ -644,7 +647,8 @@ function admin(){
     <button data-t="inbox" aria-pressed="${A.tab==='inbox'}">التبليغات والطلبات</button>
     <button data-t="ann" aria-pressed="${A.tab==='ann'}">الإعلانات</button>
     <button data-t="lb" aria-pressed="${A.tab==='lb'}">لوحة الشرف</button>
-    <button data-t="trash" aria-pressed="${A.tab==='trash'}">المحذوفات</button></div>
+    <button data-t="trash" aria-pressed="${A.tab==='trash'}">المحذوفات</button>
+    <button data-t="errors" aria-pressed="${A.tab==='errors'}">الأخطاء</button></div>
   ${backupBanner()}${body}`;
   {const nt=app.querySelector('.tabs');
    if(nt){
@@ -690,6 +694,15 @@ function admin(){
     loadUsageTab();
   }else if(A.tab==='stats'){
     loadStats();
+  }else if(A.tab==='errors'){
+    $('erl').onclick=()=>loadErrors();
+    $('erc').onclick=async()=>{
+      if(!(await askConfirm('مسح كل الأخطاء','ستُحذف جميع الأخطاء المسجلة. إن تكررت ستظهر من جديد.','امسح')))return;
+      const r=await sb.rpc('admin_errors_clear');
+      if(r.error){toast(errMsg(r.error));return}
+      loadErrors();
+    };
+    loadErrors();
   }else if(A.tab==='trash'){
     loadTrash();
   }else if(A.tab==='lb'){
@@ -702,6 +715,7 @@ function admin(){
   }else{
     $('newStu').onclick=createStudentForm;
     $('chkRef').onclick=checkRefForm;
+    $('expU').onclick=exportUsers;
     $('fu').oninput=e=>{A.fu=e.target.value.trim().toLowerCase();A.un=40;renderUsers()};
     app.querySelectorAll('[data-fx]').forEach(b=>b.onclick=()=>{A.fx=b.dataset.fx;A.un=40;admin()});
     loadUsers();
@@ -1210,6 +1224,36 @@ async function fullBackup(){
     say('انتهت النسخة: '+ar(names.length)+' ملف ZIP'+(failed.length?'، وتعذر تنزيل '+ar(failed.length)+' ملف (مذكورة في FAILED.txt)':'')+'. تأكد أن المتصفح سمح بتنزيل عدة ملفات.');
   }catch(e){say(e.message||errMsg(e))}
 }
+/* ---------- تبويب الأخطاء ---------- */
+async function loadErrors(){
+  const el=$('erlist');if(!el)return;
+  const r=await sb.rpc('admin_errors');
+  if(!$('erlist'))return;
+  if(r.error){
+    const miss=/admin_errors|schema cache|does not exist|Could not find/i.test((r.error.message||'')+(r.error.details||''));
+    el.innerHTML=`<p class="err">${miss?'لم يُنشأ جدول الأخطاء بعد. شغّل ملف client_errors.sql في Supabase (SQL Editor) مرة واحدة.':esc(errMsg(r.error))}</p>`;
+    return;
+  }
+  const rows=r.data||[];
+  const dev=u=>{u=String(u||'');
+    const os=/iPhone|iPad/.test(u)?'iPhone/iPad':/Android/.test(u)?'Android':/Windows/.test(u)?'Windows':/Mac OS/.test(u)?'Mac':'جهاز آخر';
+    const br=/Edg\//.test(u)?'Edge':/CriOS|Chrome/.test(u)?'Chrome':/FxiOS|Firefox/.test(u)?'Firefox':/Safari/.test(u)?'Safari':'';
+    return os+(br?' · '+br:'')};
+  el.innerHTML=rows.length?rows.map((x,i)=>`<div class="item" style="--sc:#B93A32;align-items:flex-start"><div class="grow">
+      <div class="nm" dir="auto" style="text-align:start;word-break:break-word">${esc(x.msg)}</div>
+      <div class="sub">${ar(x.n)} مرة · آخرها ${fdate(x.last_at)} الساعة ${ar(new Date(x.last_at).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}))}</div>
+      <div class="sub">الشاشة: ${esc(x.view||'—')} · ${esc(dev(x.ua))} · إصدار <bdi dir="ltr">${esc(x.ver||'—')}</bdi></div>
+      <div class="sub" dir="ltr" style="text-align:start;word-break:break-all">${esc(x.src||'')}</div>
+      ${x.stack?`<details><summary class="sub" style="cursor:pointer">التفاصيل التقنية</summary><pre dir="ltr" style="white-space:pre-wrap;word-break:break-all;font-size:11px;margin:6px 0 0">${esc(x.stack)}</pre></details>`:''}
+    </div><div class="acts2"><button class="ib" data-erd="${i}">حذف</button></div></div>`).join('')
+    :'<div class="empty">لا توجد أخطاء مسجلة.</div>';
+  el.querySelectorAll('[data-erd]').forEach(b=>b.onclick=async()=>{
+    const x=rows[+b.dataset.erd];
+    const d=await sb.rpc('admin_error_delete',{p_id:x.id});
+    if(d.error){toast(errMsg(d.error));return}
+    loadErrors();
+  });
+}
 /* ---------- تبويب الأرقام ---------- */
 async function loadStats(){
   const el=$('stbox');if(!el)return;
@@ -1343,6 +1387,7 @@ function priceField(id,label){
 }
 function bindPriceChips(){document.querySelectorAll('[data-pp]').forEach(b=>b.onclick=()=>{const [id,p]=b.dataset.pp.split('|');const el=$(id);if(el){el.value=p;el.focus()}})}
 function readPrice(id){const el=$(id),v=el?parseFloat(el.value):NaN;return v>=0&&v<=10000000?v:null}
+function rememberPrice(p){const rp=recentPrices().filter(x=>x!==p);rp.unshift(p);try{localStorage.setItem(RP_KEY,JSON.stringify(rp.slice(0,4)))}catch(e){}}
 async function recordSale(o){
   try{
     const r=await sb.rpc('admin_record_sale',{p_kind:o.kind,p_specialty:o.sp||null,p_days:o.days||null,p_qty:o.qty||1,p_price:o.price,p_user:o.user||null,p_note:o.note||null});
@@ -1359,10 +1404,10 @@ async function makeCodes(){
   $('er').textContent='';$('mk').disabled=true;
   const sp=$('csp').value;
   if(!sp){$('er').textContent='أضف اختصاصاً أولاً.';$('mk').disabled=false;return}
-  const r=await sb.rpc('admin_create_codes',{p_specialty:sp,p_count:n,p_days:d,p_note:note});
+  const r=await sb.rpc('admin_make_codes',{p_specialty:sp,p_count:n,p_days:d,p_note:note,p_user:null,p_kind:'code',p_price:price,p_sale_note:note});
   $('mk').disabled=false;
   if(r.error){$('er').textContent=errMsg(r.error);return}
-  await recordSale({kind:'code',sp:sp,days:d,qty:r.data.length,price:price,note:note});
+  rememberPrice(price);
   const txt=r.data.join('\n');
   $('newcodes').innerHTML=`<h3 class="sec">الأكواد الجديدة (${ar(r.data.length)})</h3><textarea class="in codebox" id="cbx" readonly>${esc(txt)}</textarea><button class="btn line block" id="cp" style="margin-top:8px">نسخ الكل</button>`;
   $('cp').onclick=async()=>{try{await navigator.clipboard.writeText(txt);toast('تم النسخ')}catch(e){$('cbx').select();toast('حدد النص وانسخه يدوياً')}};
@@ -1466,6 +1511,21 @@ function renderUsers(){
     copyText(lines.join('\n'));
   });
 }
+// تصدير قائمة الطلاب إلى ملف يفتح في Excel (بدون كلمات السر)
+function exportUsers(){
+  if(!USERS.length){toast('انتظر حتى تتحمّل قائمة الطلاب.');return}
+  const now=Date.now();
+  const cell=v=>{v=String(v==null?'':v);if(/^[=+\-@]/.test(v))v="'"+v;return /[",\n\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v};
+  const day=d=>{if(!d)return '';const t=new Date(d);return isNaN(t)?'':t.toISOString().slice(0,10)};
+  const head=['name','username','role','status','created','last_login','subscriptions','ref_code','referrals','ambassador'];
+  const lines=[head.join(',')].concat(USERS.map(u=>{
+    const subs=u.subs||[],live=subs.filter(x=>new Date(x.exp)>now);
+    const st=u.blocked?'blocked':(live.length?'active':(subs.length?'expired':((u.codes||[]).length?'pending':'none')));
+    return [u.full_name||'',u.username||'',u.role||'student',st,day(u.created_at),day(u.last_login),subs.map(x=>spById(x.sp).n+' ('+day(x.exp)+')').join(' | '),u.ref_code||'',u.ref_cnt||0,u.is_amb?'yes':'no'].map(cell).join(',');
+  }));
+  downloadFile('boardcard-students-'+new Date().toISOString().slice(0,10)+'.csv','\ufeff'+lines.join('\r\n'),'text/csv;charset=utf-8');
+  toast('تم تصدير '+ar(USERS.length)+' حساب');
+}
 // زر تجديد واحد: تمديد مباشر أو كود تفعيل، بأي مدة
 function renewForm(u){
   if(!Store.specialties.length){toast('أضف اختصاصاً أولاً');return}
@@ -1496,14 +1556,14 @@ function renewForm(u){
     if(mode==='now'){
       const cur=subs.find(x=>x.sp===sp);
       const base=Math.max(Date.now(),cur?+new Date(cur.exp):0);
-      const r=await sb.rpc('admin_set_expiry',{p_user:u.id,p_specialty:sp,p_expires:new Date(base+days*864e5).toISOString()});
+      const r=await sb.rpc('admin_extend_sale',{p_user:u.id,p_specialty:sp,p_days:days,p_price:price});
       if(r.error){$('er').textContent=errMsg(r.error);$('rgo').disabled=false;return}
-      await recordSale({kind:'extend',sp:sp,days:days,qty:1,price:price,user:u.id});
+      rememberPrice(price);
       closeModal();toast('تم تمديد الاشتراك '+ar(days)+' يوماً');loadUsers();
     }else{
-      const r=await sb.rpc('admin_create_codes',{p_specialty:sp,p_count:1,p_days:days,p_note:'تجديد',p_user:u.id});
+      const r=await sb.rpc('admin_make_codes',{p_specialty:sp,p_count:1,p_days:days,p_note:'تجديد',p_user:u.id,p_kind:'renew',p_price:price,p_sale_note:null});
       if(r.error){$('er').textContent=errMsg(r.error);$('rgo').disabled=false;return}
-      await recordSale({kind:'renew',sp:sp,days:days,qty:1,price:price,user:u.id});
+      rememberPrice(price);
       const sn=spById(sp).n;
       showCredentials('كود لـ '+(u.full_name||u.username),[['الاختصاص',sn],['رمز التفعيل',r.data[0]]],'الاختصاص: '+sn+'\nرمز التفعيل: '+r.data[0]+'\nالمدة: '+days+' يوم');
       loadUsers();
@@ -1553,13 +1613,9 @@ function changeSubForm(u,live){
     if(old===nw){$('er').textContent='اختر اختصاصاً مختلفاً عن الحالي.';return}
     if(!(days>=1&&days<=365)){$('er').textContent='المدة من 1 إلى 365 يوم.';return}
     $('cggo').disabled=true;$('er').textContent='';
-    const c=await sb.rpc('admin_create_codes',{p_specialty:nw,p_count:1,p_days:days,p_note:'تغيير اشتراك',p_user:u.id});
-    if(c.error||!c.data||!c.data[0]){$('er').textContent=c.error?errMsg(c.error):'تعذر إنشاء الاشتراك الجديد.';$('cggo').disabled=false;return}
-    const a=await sb.rpc('admin_activate_code',{p_code:c.data[0]});
-    if(a.error){$('er').textContent='أُنشئ الرمز لكن تعذر تفعيله: '+errMsg(a.error)+'. لم يُنهَ الاشتراك القديم، ويظهر الرمز عند الطالب بانتظار التفعيل.';$('cggo').disabled=false;loadUsers();return}
-    const e=await endSub(u,old);
-    closeModal();
-    toast(e?'فُعّل الاشتراك الجديد لكن تعذر إنهاء القديم: '+errMsg(e):'تم تغيير الاشتراك');
+    const c=await sb.rpc('admin_change_sub',{p_user:u.id,p_old:old,p_new:nw,p_days:days});
+    if(c.error){$('er').textContent=errMsg(c.error);$('cggo').disabled=false;return}
+    closeModal();toast('تم تغيير الاشتراك');
     loadUsers();
   };
 }
@@ -1610,12 +1666,12 @@ function createStudentForm(){
     const price=readPrice('spr');
     if(price===null){$('er').textContent='اكتب المبلغ المدفوع (0 إذا مجاني).';return}
     $('sv').disabled=true;
-    const r=await sb.functions.invoke('student-admin',{body:{action:'create',username,password,full_name,days,specialty_id,ref_code}});
+    const r=await sb.functions.invoke('student-admin',{body:{action:'create',username,password,full_name,days,specialty_id,ref_code,price}});
     let err=r.error?'تعذر إنشاء الحساب. جرب مرة ثانية.':null,d=r.data;
     if(r.error&&r.error.context&&r.error.context.json){try{d=await r.error.context.json()}catch(e){}}
     if(d&&d.error)err=({username_taken:'اسم المستخدم مستخدم من قبل.',bad_username:'اسم المستخدم غير صالح.',bad_password:'كلمة السر غير صالحة.',forbidden:'ما عندك صلاحية.',create_failed:'تعذر إنشاء الحساب. جرب اسم مستخدم آخر.',bad_specialty:'اختر الاختصاص.',bad_ref:'كود الداعي غير صحيح.'})[d.error]||err;
     if(err||!d||!d.code){$('er').textContent=err||'تعذر إنشاء الحساب.';$('sv').disabled=false;return}
-    await recordSale({kind:'student',sp:specialty_id,days:days,qty:1,price:price,note:full_name});
+    if(d.sale)rememberPrice(price);else await recordSale({kind:'student',sp:specialty_id,days:days,qty:1,price:price,note:full_name});
     const spn=spById(specialty_id).n;
     showCredentials('تم إنشاء الحساب',[['الاختصاص',spn],['اسم المستخدم',d.username],['كلمة السر',d.password],['رمز التفعيل',d.code]],
       'حسابك في Boardcard\nالاختصاص: '+spn+'\nاسم المستخدم: '+d.username+'\nكلمة السر: '+d.password+'\nرمز التفعيل: '+d.code+'\nمدة الاشتراك: '+d.days+' يوم');
@@ -2115,17 +2171,16 @@ Image: figure1.jpg
 
 
 /* ---------- دخول الأدمن ---------- */
-function adminLogin(notice){
+function authShell(inner,notice){
   view='auth';
   app.innerHTML=`<div class="top"><div class="brand">${brandHtml()}<small>لوحة التحكم</small></div></div>
-  <div class="auth">
-    ${logoPlate(120)}
-    ${notice?`<div class="banner">${esc(notice)}</div>`:''}
-    <label class="fld"><span>الإيميل</span><input class="in" id="au-e" type="email" inputmode="email" autocomplete="email" style="direction:ltr;text-align:left"></label>
+  <div class="auth">${logoPlate(120)}${notice?`<div class="banner">${esc(notice)}</div>`:''}${inner}</div>`;
+}
+function adminLogin(notice){
+  authShell(`<label class="fld"><span>الإيميل</span><input class="in" id="au-e" type="email" inputmode="email" autocomplete="email" style="direction:ltr;text-align:left"></label>
     <label class="fld"><span>كلمة السر</span><input class="in" id="au-p" type="password" autocomplete="current-password" style="direction:ltr;text-align:left"></label>
     <p class="err" id="er" role="alert"></p>
-    <button class="btn block" id="au-go">دخول</button>
-  </div>`;
+    <button class="btn block" id="au-go">دخول</button>`,notice);
   ['au-e','au-p'].forEach(id=>{$(id).onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('au-go').click()}}});
   $('au-go').onclick=async()=>{
     const email=$('au-e').value.trim(),password=$('au-p').value;
@@ -2136,6 +2191,43 @@ function adminLogin(notice){
       if(r.error){$('er').textContent='الإيميل أو كلمة السر غير صحيحة.';$('au-go').disabled=false;return}
       startAdmin();
     }catch(e){$('er').textContent='تعذر الاتصال. جرب مرة ثانية.';$('au-go').disabled=false}
+  };
+}
+// خطوة التحقق الثنائي: رمز على الإيميل (Supabase) أو بديل عبر تلغرام
+function adminOtp(email){
+  authShell(`<p class="hint" style="margin:0 0 10px">تحقق ثنائي: اطلب رمزاً ثم اكتبه هنا.</p>
+    <div style="display:flex;gap:8px;margin-bottom:10px"><button class="btn line" id="ot-m" style="flex:1">رمز على الإيميل</button><button class="btn line" id="ot-t" style="flex:1">رمز على تلغرام</button></div>
+    <label class="fld"><span>الرمز</span><input class="in" id="ot-c" inputmode="numeric" autocomplete="one-time-code" maxlength="10" style="direction:ltr;text-align:center;letter-spacing:4px"></label>
+    <p class="err" id="er" role="alert"></p>
+    <button class="btn block" id="ot-go">تأكيد</button>
+    <button class="btn line block" id="ot-out" style="margin-top:8px">رجوع</button>`);
+  let ch=null;
+  $('ot-out').onclick=adminLogout;
+  $('ot-m').onclick=async()=>{
+    $('ot-m').disabled=true;$('er').textContent='';
+    const r=await sb.auth.signInWithOtp({email:email,options:{shouldCreateUser:false}});
+    if(r.error){$('er').textContent='تعذر إرسال الرمز إلى الإيميل. جرب تلغرام.';$('ot-m').disabled=false;return}
+    ch='email';toast('أُرسل الرمز إلى الإيميل');setTimeout(()=>{$('ot-m').disabled=false},30000);$('ot-c').focus();
+  };
+  $('ot-t').onclick=async()=>{
+    $('ot-t').disabled=true;$('er').textContent='';
+    const r=await sb.functions.invoke('admin-otp',{body:{action:'send'}});
+    if(r.error||(r.data&&r.data.error)){$('er').textContent='تعذر إرسال الرمز إلى تلغرام.';$('ot-t').disabled=false;return}
+    ch='tg';toast('أُرسل الرمز إلى تلغرام');setTimeout(()=>{$('ot-t').disabled=false},30000);$('ot-c').focus();
+  };
+  $('ot-c').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('ot-go').click()}};
+  $('ot-go').onclick=async()=>{
+    const code=$('ot-c').value.trim();
+    if(!/^\d{4,10}$/.test(code)){$('er').textContent='اكتب الرمز كاملاً.';return}
+    if(!ch){$('er').textContent='اطلب الرمز أولاً.';return}
+    $('ot-go').disabled=true;$('er').textContent='';
+    try{
+      let ok=false;
+      if(ch==='email'){const r=await sb.auth.verifyOtp({email:email,token:code,type:'email'});ok=!r.error}
+      else{const r=await sb.functions.invoke('admin-otp',{body:{action:'verify',code:code}});ok=!r.error&&r.data&&r.data.ok}
+      if(!ok){$('er').textContent='الرمز غير صحيح أو منتهي.';$('ot-go').disabled=false;return}
+      startAdmin();
+    }catch(e){$('er').textContent='تعذر الاتصال.';$('ot-go').disabled=false}
   };
 }
 async function adminLogout(){
@@ -2149,6 +2241,8 @@ async function startAdmin(){
     const g=await Promise.race([sb.auth.getSession(),new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),10000))]);
     if(!g.data.session){adminLogin();return}
     Store.user=g.data.session.user;
+    const gt=await sb.rpc('admin_gate');
+    if(gt.data&&gt.data.required&&!gt.data.ok){adminOtp(Store.user.email);return}
     await loadMe();
     if(!Store.isAdmin){
       try{await sb.auth.signOut({scope:'local'})}catch(e){}

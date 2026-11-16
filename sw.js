@@ -1,5 +1,5 @@
 /* Boardcard service worker: keeps the app shell available, shows review notifications, and never touches API calls. */
-const V = 'boardcard-v4';
+const V = 'boardcard-v5';
 const SHELL = ['./', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png', 'logo.png', 'logo-mark.png'];
 // Only these same-origin files are kept in the cache; anything else goes straight to the network.
 const STATIC_RE = /\.(png|jpe?g|webp|svg|ico|webmanifest|woff2?)$/i;
@@ -49,6 +49,16 @@ self.addEventListener('fetch', e => {
     return;
   }
 
+  // Versioned code (app.js?v=..., app.css?v=...) and the vendor library never change under the same URL: cache first.
+  if (/\.(js|css)$/i.test(u.pathname) && (u.search.indexOf('v=') > -1 || u.pathname.indexOf('/vendor/') > -1)) {
+    e.respondWith(
+      caches.match(r).then(hit => hit || fetch(r).then(res => {
+        if (res.ok && res.type === 'basic') { const copy = res.clone(); keep(e, caches.open(V).then(c => c.put(r, copy))); }
+        return res;
+      }))
+    );
+    return;
+  }
   if (!STATIC_RE.test(u.pathname)) return;
   // Static files (icons, logo, manifest): answer from the cache at once and refresh the copy in the background.
   e.respondWith(

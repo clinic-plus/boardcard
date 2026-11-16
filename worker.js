@@ -52,40 +52,101 @@ async function limited(env, id) {
   }
 }
 
-// Verifies the Supabase session token; returns {id, h} for any signed-in user.
-async function whoami(req) {
+// ---- Token checks ----
+const b64u = x => { x = x.replace(/-/g, '+').replace(/_/g, '/'); return Uint8Array.from(atob(x + '='.repeat((4 - x.length % 4) % 4)), c => c.charCodeAt(0)); };
+const bearer = req => { const m = /^Bearer\s+(\S+)$/.exec(req.headers.get('Authorization') || ''); return m ? m[1] : null; };
+
+// Public signing keys of the Supabase project, cached for 10 minutes (a stale copy is kept if Supabase is briefly unreachable).
+let JWKS = { at: 0, keys: null };
+async function jwks() {
+  const now = Date.now();
+  if (JWKS.keys && now - JWKS.at < 600000) return JWKS.keys;
   try {
-    const m = /^Bearer\s+(\S+)$/.exec(req.headers.get('Authorization') || '');
-    if (!m) return null;
-    const h = { apikey: KEY, Authorization: 'Bearer ' + m[1], Accept: 'application/json' };
+    const r = await fetch(SB + '/auth/v1/.well-known/jwks.json', { headers: { apikey: KEY } });
+    if (r.ok) {
+      const j = await r.json();
+      if (j && Array.isArray(j.keys)) { JWKS = { at: now, keys: j.keys }; return JWKS.keys; }
+    }
+  } catch (e) {}
+  return JWKS.keys;
+}
+
+// Verifies the token signature here, with no call to Supabase. Returns {id, sid, token} or null when the token is
+// invalid, or undefined when it cannot be decided locally (legacy HS256 signing, no keys) so the caller falls back.
+async function verifyLocal(token) {
+  try {
+    const p = token.split('.');
+    if (p.length !== 3) return null;
+    const head = JSON.parse(new TextDecoder().decode(b64u(p[0])));
+    if (head.alg !== 'ES256' && head.alg !== 'RS256') return undefined;
+    const keys = await jwks();
+    const jwk = keys && keys.find(k => k.kid === head.kid && (!k.alg || k.alg === head.alg));
+    if (!jwk) return undefined;
+    const key = head.alg === 'ES256'
+      ? await crypto.subtle.importKey('jwk', jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify'])
+      : await crypto.subtle.importKey('jwk', jwk, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
+    const okSig = await crypto.subtle.verify(
+      head.alg === 'ES256' ? { name: 'ECDSA', hash: 'SHA-256' } : { name: 'RSASSA-PKCS1-v1_5' },
+      key, b64u(p[2]), new TextEncoder().encode(p[0] + '.' + p[1]));
+    if (!okSig) return null;
+    const c = JSON.parse(new TextDecoder().decode(b64u(p[1])));
+    if (!c || c.iss !== SB + '/auth/v1' || c.aud !== 'authenticated' || c.role !== 'authenticated') return null;
+    if (typeof c.exp !== 'number' || c.exp * 1000 < Date.now()) return null;
+    if (!UUID_RE.test(c.sub || '')) return null;
+    return { id: c.sub, sid: c.session_id || '', token: token };
+  } catch (e) {
+    return undefined;
+  }
+}
+
+// Asks Supabase whether the token is valid (used for admin actions and as the fallback).
+async function whoamiRemote(token) {
+  try {
+    const h = { apikey: KEY, Authorization: 'Bearer ' + token, Accept: 'application/json' };
     const u = await fetch(SB + '/auth/v1/user', { headers: h });
     if (!u.ok) return null;
     const user = await u.json();
     if (!user || !UUID_RE.test(user.id || '')) return null;
-    return { id: user.id, h: h };
+    return { id: user.id, sid: '', token: token };
   } catch (e) {
     return null;
   }
 }
 
-// The caller's own profile row ({role, blocked}), or null when it cannot be read.
-async function profileOf(me) {
-  try {
-    const p = await fetch(SB + '/rest/v1/profiles?id=eq.' + me.id + '&select=role,blocked', { headers: me.h });
-    if (!p.ok) return null;
-    const rows = await p.json();
-    return (rows && rows[0]) || null;
-  } catch (e) {
-    return null;
-  }
+// Any signed-in user. Checked locally when possible, so a student request costs no extra Supabase call.
+async function whoami(req) {
+  const t = bearer(req);
+  if (!t) return null;
+  const l = await verifyLocal(t);
+  if (l !== undefined) return l;
+  return await whoamiRemote(t);
 }
 
-// Same, and the caller must be a non-blocked admin.
+const rpcH = token => ({ apikey: KEY, Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', Accept: 'application/json' });
+
+// Admin check: a single call to the database function is_admin(), which also enforces the second login step.
 async function isAdmin(req) {
-  const me = await whoami(req);
-  if (!me) return false;
-  const r = await profileOf(me);
-  return !!r && r.role === 'admin' && !r.blocked;
+  try {
+    const t = bearer(req);
+    if (!t) return false;
+    const r = await fetch(SB + '/rest/v1/rpc/is_admin', { method: 'POST', headers: rpcH(t), body: '{}' });
+    if (!r.ok) return false;
+    return (await r.json()) === true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// {blocked, session} for a student write. Returns null when it cannot be read (Supabase hiccup): the write is then
+// allowed, so a student never loses data because of a temporary outage.
+async function gateOf(me) {
+  try {
+    const r = await fetch(SB + '/rest/v1/rpc/data_gate', { method: 'POST', headers: rpcH(me.token), body: '{}' });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (e) {
+    return null;
+  }
 }
 
 function kind(b) {
@@ -142,20 +203,27 @@ async function data(req, env, url) {
     if (req.method === 'GET') {
       const o = await env.USERDATA.get(key);
       if (!o) return json({ error: 'none' }, 404);
-      return new Response(o.body, { headers: { 'Content-Type': 'application/gzip', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } });
+      return new Response(o.body, { headers: { 'Content-Type': 'application/gzip', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Data-Etag': o.etag } });
     }
     if (req.method === 'PUT') {
-      // A blocked account cannot write. If the profile cannot be read (Supabase hiccup) the write
-      // is allowed, so a student never loses data because of a temporary outage.
-      const pr = await profileOf(me);
-      if (pr && pr.blocked) return json({ error: 'blocked' }, 403);
+      // A blocked account, or a device whose session was replaced by a newer login, cannot write.
+      const g = await gateOf(me);
+      if (g && g.blocked) return json({ error: 'blocked' }, 403);
+      if (g && g.session === false) return json({ error: 'session_replaced' }, 409);
       const buf = await readCapped(req, k.max);
       if (!buf) return json({ error: 'too_big' }, 413);
       if (buf.byteLength < 20) return json({ error: 'empty' }, 400);
       const b = new Uint8Array(buf, 0, 3);
       if (b[0] !== 0x1f || b[1] !== 0x8b || b[2] !== 0x08) return json({ error: 'bad_type' }, 415);
-      await env.USERDATA.put(key, buf, { httpMetadata: { contentType: 'application/gzip' } });
-      return json({ ok: true, size: buf.byteLength });
+      // Optional conflict check: the device sends the ETag it last read; if the file changed meanwhile it must merge first.
+      const ifTag = (req.headers.get('X-If-Etag') || '').replace(/[^0-9a-zA-Z_-]/g, '');
+      const opts = { httpMetadata: { contentType: 'application/gzip' } };
+      if (ifTag) opts.onlyIf = { etagMatches: ifTag };
+      const put = await env.USERDATA.put(key, buf, opts);
+      if (!put) return json({ error: 'conflict' }, 412);
+      return new Response(JSON.stringify({ ok: true, size: buf.byteLength }), {
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Data-Etag': put.etag }
+      });
     }
     return json({ error: 'method' }, 405);
   }
