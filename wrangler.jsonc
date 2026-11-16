@@ -10,5 +10,9 @@
   "r2_buckets": [
     { "binding": "IMAGES", "bucket_name": "boardcard-images" },
     { "binding": "USERDATA", "bucket_name": "boardcard-userdata" }
+  ],
+  "ratelimits": [
+    { "name": "RL", "namespace_id": "1001",
+      "simple": { "limit": 30, "period": 60 } }
   ]
 }
