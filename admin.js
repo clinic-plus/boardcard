@@ -1203,10 +1203,11 @@ function renderUsers(){
     const more=stud?`<details class="umore"><summary class="ib">المزيد ▾</summary><div class="umenu"><button class="ib" data-uamb="${esc(u.id)}">${u.is_amb?'إلغاء السفير':'تحويل إلى سفير'}</button>${u.is_amb?`<button class="ib" data-upaid="${esc(u.id)}">تسجيل دفع</button>`:''}<button class="ib" data-ucp="${esc(u.id)}">نسخ المعلومات</button>${act?`<button class="ib" data-uchg="${esc(u.id)}">تغيير الاشتراك</button><button class="ib del" data-ucan="${esc(u.id)}">إلغاء الاشتراك</button>`:''}<button class="ib" data-up="${esc(u.id)}">كلمة سر جديدة</button><button class="ib ${u.blocked?'':'del'}" data-ub="${esc(u.id)}">${u.blocked?'رفع الإيقاف':'إيقاف'}</button><button class="ib del" data-udel="${esc(u.id)}">حذف</button></div></details>`:'';
     return `<div class="item uc" style="--sc:${u.blocked?'#B93A32':(act?'#1F5FBF':'#5A6B77')};align-items:flex-start"><div class="grow"><div class="nm">${esc(u.full_name||'بدون اسم')}${u.role==='admin'?' (أدمن)':''} ${chip}</div>
       <div class="sub ucl"><bdi dir="ltr" style="user-select:all">@${esc(u.username||'')}</bdi>${u.phone?' · '+phoneHtml(u.phone):''}</div>${subsHtml}${pendHtml}${detHtml}
-      <div class="acts3"><button class="ib" data-ur="${esc(u.id)}">تجديد</button>${stud?`${pend.length?`<button class="ib" data-uact="${esc(u.id)}">تفعيل الآن</button>`:''}<button class="ib" data-ued="${esc(u.id)}">تعديل</button>`:''}${more}</div></div></div>`}).join('')+(list.length>UN?`<button class="btn line block" id="umore">عرض المزيد (المعروض ${ar(UN)} من ${ar(list.length)})</button>`:'')
+      <div class="acts3"><button class="ib" data-ur="${esc(u.id)}">تجديد</button>${(!stud&&Store.user&&u.id===Store.user.id)?`<button class="ib" data-uapw="1">كلمة السر</button>`:''}${stud?`${pend.length?`<button class="ib" data-uact="${esc(u.id)}">تفعيل الآن</button>`:''}<button class="ib" data-ued="${esc(u.id)}">تعديل</button>`:''}${more}</div></div></div>`}).join('')+(list.length>UN?`<button class="btn line block" id="umore">عرض المزيد (المعروض ${ar(UN)} من ${ar(list.length)})</button>`:'')
     :'<div class="empty">لا يوجد طلاب مطابقون.</div>';
   {const um=$('umore');if(um)um.onclick=()=>{A.un=UN+40;renderUsers()}}
   el.querySelectorAll('[data-ur]').forEach(b=>b.onclick=()=>renewForm(USERS.find(x=>x.id===b.dataset.ur)));
+  el.querySelectorAll('[data-uapw]').forEach(b=>b.onclick=adminPwForm);
   el.querySelectorAll('[data-ub]').forEach(b=>b.onclick=async()=>{
     const u=USERS.find(x=>x.id===b.dataset.ub);
     if(!u.blocked){const ok=await askConfirm('إيقاف الحساب','سيُمنع «'+(u.full_name||u.username)+'» من الدخول للمحتوى.','أوقف');if(!ok)return}
@@ -1395,6 +1396,34 @@ function phoneHtml(p){
   p=String(p||'').trim();if(!p)return '';
   const wa=p.replace(/^\+/,'').replace(/^00/,'').replace(/^0/,'964');
   return `<bdi dir="ltr" style="user-select:all">${esc(p)}</bdi> · <a href="tel:${esc(p)}">اتصال</a> · <a href="https://wa.me/${esc(wa)}" target="_blank" rel="noopener noreferrer">واتساب</a>`;
+}
+// Change the admin's own password. The current password is checked with a separate, throw-away client so the
+// panel's own session (and its second-step verification, when switched on) is not replaced.
+function adminPwForm(){
+  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>تغيير كلمة سر الأدمن</h2>
+    <label class="fld"><span>كلمة السر الحالية</span><input class="in" id="pw0" type="password" autocomplete="current-password" style="direction:ltr;text-align:left"></label>
+    <label class="fld"><span>كلمة السر الجديدة (8 أحرف على الأقل)</span><input class="in" id="pw1" type="password" autocomplete="new-password" maxlength="72" style="direction:ltr;text-align:left"></label>
+    <label class="fld"><span>أعد كتابة الجديدة</span><input class="in" id="pw2" type="password" autocomplete="new-password" maxlength="72" style="direction:ltr;text-align:left"></label>
+    <p class="err" id="er" role="alert"></p><button class="btn block" id="pwgo">تغيير</button>`);
+  $('cl').onclick=closeModal;
+  $('pwgo').onclick=async()=>{
+    const a=$('pw0').value,b=$('pw1').value,c=$('pw2').value,er=$('er');
+    if(!a){er.textContent='اكتب كلمة السر الحالية.';return}
+    if(b.length<8||b.length>72){er.textContent='كلمة السر الجديدة من 8 إلى 72 حرفاً.';return}
+    if(b!==c){er.textContent='كلمتا السر الجديدتان غير متطابقتين.';return}
+    if(b===a){er.textContent='اختر كلمة سر مختلفة عن الحالية.';return}
+    $('pwgo').disabled=true;er.textContent='';
+    try{
+      const email=Store.user&&Store.user.email;
+      const tmp=window.supabase.createClient(SB_URL,SB_KEY,{auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false,storageKey:'sb-pwcheck'}});
+      const v=await tmp.auth.signInWithPassword({email:email,password:a});
+      try{await tmp.auth.signOut({scope:'local'})}catch(e){}
+      if(v.error){er.textContent='كلمة السر الحالية غير صحيحة.';$('pwgo').disabled=false;return}
+      const u=await sb.auth.updateUser({password:b});
+      if(u.error){er.textContent=/same|different/i.test(u.error.message||'')?'اختر كلمة سر مختلفة عن الحالية.':'تعذر تغيير كلمة السر. جرب مرة ثانية.';$('pwgo').disabled=false;return}
+      closeModal();toast('تم تغيير كلمة السر');
+    }catch(e){er.textContent='تعذر الاتصال. جرب مرة ثانية.';$('pwgo').disabled=false}
+  };
 }
 function createStudentForm(){
   if(!Store.specialties.length){toast('أضف اختصاصاً أولاً');return}
