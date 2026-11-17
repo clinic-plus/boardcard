@@ -1952,6 +1952,7 @@ async function liveLoad(sp,force){
   catch(e){LV[sp]={info:null,at:Date.now(),off:0}}
   return LV[sp].info;
 }
+const lvg=id=>{try{return JSON.parse(lsGet('bc_lvg_'+id)||'null')}catch(e){return null}};
 const lvNow=sp=>Date.now()+((LV[sp]&&LV[sp].off)||0);
 function liveCard(sp){
   const c=LV[sp],i=c&&c.info;if(!i)return '';
@@ -1970,7 +1971,7 @@ function liveHtml(){
   const sps=F.sp?(Store.subs[F.sp]&&dqOk(F.sp)?[F.sp]:[]):Object.keys(Store.subs).filter(dqOk);
   if(sps.length)return sps.map(liveCard).join('');
   if(!F.sp&&!Store.user){const dw=new Date(Date.now()+3*36e5).getUTCDay();
-    if(dw>=3&&dw<=5&&spList().some(p=>dqOk(p.id)))return `<div class="dq" data-lv="" role="button" tabindex="0"><div class="dqi">🔴</div><div class="gt"><b>امتحان الجمعة الحي</b><span>الجمعة 8 مساءً، الكل بنفس الوقت</span><small>مشاركتك الأولى مجانية</small></div><span class="pill">شارك</span></div>`}
+    if(dw>=3&&dw<=5&&spList().some(p=>dqOk(p.id)))return `<div class="dq" data-lv="" role="button" tabindex="0"><div class="dqi">🔴</div><div class="gt"><b>امتحان الجمعة الحي</b><span>الجمعة 8 مساءً، الكل بنفس الوقت</span><small>جرّبه مجاناً (بدون ترتيب)</small></div><span class="pill">شارك</span></div>`}
   return '';
 }
 async function liveScreen(sp){
@@ -1984,22 +1985,30 @@ function renderLive(sp){
   const i=LV[sp].info,now=lvNow(sp),st=Date.parse(i.starts_at),je=st+i.join_mins*6e4,spn=spById(sp).n;
   const head=`<div class="top"><div class="brand">🔴 امتحان الجمعة الحي<small>${esc(spn)}</small></div><button class="pill" id="lvb">رجوع</button></div>`;
   const rules=`<p class="hint">${ar(i.n)} سؤالاً، مدتها ${ar(i.minutes)} دقيقة. الدخول متاح ${ar(i.join_mins)} دقيقة من لحظة البدء، والكل بنفس الأسئلة والوقت. النتيجة والأجوبة والترتيب تظهر بعد انتهاء الامتحان للجميع.</p>`;
-  const nameBox=Store.user?'':`<label class="fld"><span>اسمك في الترتيب</span><input class="in" id="lvn" maxlength="20" dir="auto" value="${esc(lsGet('bc_pname')||'')}"></label>`;
+  const nameBox='';
+  const guestNote=i.ranked?'':'<p class="hint"><b>⚠️ مشاركتك تجريبية:</b> لا تُسجَّل نتيجتك ولا تدخل في الترتيب الحقيقي. بعد انتهاء الامتحان يظهر لك ترتيبك التقريبي مقارنةً بالمشاركين الرسميين (المشتركين) فقط. للمشاركة الرسمية اشترك في الاختصاص.</p>';
+  const g=i.ranked?null:lvg(i.id);
   let body='',after=null;
   const ea=i.ends_at?Date.parse(i.ends_at):je+(i.minutes+1)*6e4;
-  if(i.done){
+  if(g&&g.ans){
+    if(now>=ea)body='<p>أنهيت هذا الامتحان (مشاركة تجريبية).</p>'+guestNote+'<button class="btn block" id="lvgm">عرض نتيجتي وترتيبي التقريبي</button><div id="lvboard" style="margin-top:10px"><p class="hint">جارٍ التحميل…</p></div>',after='board';
+    else body='<p>أنهيت هذا الامتحان ✓</p>'+guestNote+'<p class="hint">النتيجة والترتيب التقريبي يظهران بعد انتهاء الامتحان (بعد '+cdTxt(ea-now)+').</p>';
+  }
+  else if(g&&g.b&&now<g.b+i.minutes*6e4&&now<=ea){body='<p>لديك امتحان قيد التنفيذ.</p><button class="btn block" id="lvgo">أكمل الامتحان</button>'}
+  else if(i.done){
     if(now>=ea){body='<p>أنهيت هذا الامتحان.</p><button class="btn block" id="lvmine">عرض نتيجتي وأجوبتي</button><div id="lvboard" style="margin-top:10px"><p class="hint">جارٍ التحميل…</p></div>';after='board'}
     else{body='<p>أنهيت هذا الامتحان ✓</p><p class="hint">النتيجة والأجوبة والترتيب تظهر بعد انتهاء الامتحان لجميع المشاركين (بعد '+cdTxt(ea-now)+').</p>'}
   }
   else if(i.begun&&now<je+i.minutes*6e4){body=`<p>لديك امتحان قيد التنفيذ.</p><button class="btn block" id="lvgo">أكمل الامتحان</button>`}
-  else if(now<st){body=`<div class="big" style="font-size:40px" id="lvcd">${cdTxt(st-now)}</div><p>يبدأ الجمعة 8 مساءً بتوقيت العراق</p>${rules}${Store.subs[sp]?'':'<p class="hint">مشاركتك الأولى مجانية، ثم يلزم اشتراك الاختصاص.</p>'}`;after='tick'}
-  else if(now<=je){body=`<p>بدأ الامتحان! الباب يُغلق بعد <b id="lvcd">${cdTxt(je-now)}</b></p>${rules}${nameBox}<button class="btn block" id="lvgo">ابدأ الامتحان</button>`;after='tick'}
+  else if(now<st){body=`<div class="big" style="font-size:40px" id="lvcd">${cdTxt(st-now)}</div><p>يبدأ الجمعة 8 مساءً بتوقيت العراق</p>${rules}${guestNote}`;after='tick'}
+  else if(now<=je){body=`<p>بدأ الامتحان! الباب يُغلق بعد <b id="lvcd">${cdTxt(je-now)}</b></p>${rules}${guestNote}<button class="btn block" id="lvgo">ابدأ الامتحان</button>`;after='tick'}
   else if(now<ea){body='<p>أُغلق باب الدخول، والامتحان ما زال جارياً لبعض المشاركين. تظهر النتائج والترتيب بعد انتهائه.</p>'}
   else{body='<p>انتهى امتحان هذا الأسبوع. الامتحان القادم الجمعة القادمة 8 مساءً.</p><div id="lvboard"><p class="hint">جارٍ تحميل النتائج…</p></div>';after='board'}
   app.innerHTML=head+`<div class="sum">${body}</div>`;
   $('lvb').onclick=home;
   const lm=$('lvmine');if(lm)lm.onclick=()=>liveMine(sp);
-  const go=$('lvgo');if(go)go.onclick=()=>{let nm='';if(!Store.user){nm=($('lvn')?$('lvn').value:lsGet('bc_pname')||'').trim();if(!i.begun&&nm.length<2){toast('اكتب اسمك (حرفان على الأقل).');return}if(nm)lsSet('bc_pname',nm)}liveGo(sp,nm)};
+  const go=$('lvgo');if(go)go.onclick=()=>liveGo(sp,'');
+  const gm=$('lvgm');if(gm)gm.onclick=()=>liveGuestMine(sp);
   if(after==='board')liveBoard(sp,i.id,'lvboard');
   if(after==='tick'){const target=now<st?st:je;liveTick=setInterval(()=>{const el=$('lvcd');if(!el||view!=='live'){clearInterval(liveTick);return}const left=target-lvNow(sp);if(left<=0){clearInterval(liveTick);liveLoad(sp,true).then(()=>{if(view==='live')renderLive(sp)});return}el.textContent=cdTxt(left)},1000)}
 }
@@ -2025,9 +2034,15 @@ async function liveGo(sp,nm){
     toast(msgOf(r.error,{closed:'أُغلق باب الدخول لهذا الأسبوع.',already_done:'شاركت بهذا الامتحان مسبقاً.',not_open:'لم يبدأ الامتحان بعد.',expired:'انتهى وقت امتحانك.'}));
     await liveLoad(sp,true);renderLive(sp);return;
   }
-  const d=r.data,off=Date.parse(d.now)-Date.now();
+  const d=r.data,off=Date.parse(d.now)-Date.now(),ranked=d.ranked!==false;
+  let b=Date.parse(d.begun_at);
+  if(!ranked){
+    const sv=lvg(i.id);
+    if(sv&&sv.ans){toast('شاركت بهذا الامتحان مسبقاً.');await liveLoad(sp,true);renderLive(sp);return}
+    if(sv&&sv.b&&Date.parse(d.now)<sv.b+d.minutes*6e4)b=sv.b;else lsSet('bc_lvg_'+i.id,JSON.stringify({b:b}));
+  }
   let ans=[];try{ans=JSON.parse(lsGet('bc_lv_'+i.id)||'[]')||[]}catch(e){}
-  LR={sp:sp,i:i,qs:d.questions,ans:ans,k:0,end:Date.parse(d.begun_at)+d.minutes*6e4-off};
+  LR={sp:sp,i:i,qs:d.questions,ans:ans,k:0,ranked:ranked,b:b,end:b+d.minutes*6e4-off};
   liveShow();
 }
 function liveShow(){
@@ -2050,6 +2065,15 @@ async function liveSubmit(){
   L.sending=true;if(modal.innerHTML.trim())closeModal();
   loadingScreen('جارٍ تسليم الامتحان…');
   const ans=L.qs.map((q,k)=>L.ans[k]==null?-1:L.ans[k]);
+  if(!L.ranked){
+    // trial run: nothing is sent or stored on the server; the rank is worked out on this device after the exam ends
+    const secs=Math.max(0,Math.min(L.i.minutes*60,Math.round((lvNow(L.sp)-L.b)/1000)));
+    lsSet('bc_lv_'+L.i.id,'[]');lsSet('bc_lvg_'+L.i.id,JSON.stringify({b:L.b,ans:ans,secs:secs}));
+    await liveLoad(L.sp,true);
+    const inf=LV[L.sp]&&LV[L.sp].info,ea=inf&&inf.ends_at?Date.parse(inf.ends_at):0;
+    if(!inf||lvNow(L.sp)>=ea){if(inf){liveGuestMine(L.sp)}else{home()}return}
+    liveWait(L,{ends_at:inf.ends_at,secs:secs,guest:true});return;
+  }
   // a dropped connection must not throw the exam away: retry the submit a few times (the server refuses a second submit, so it is safe)
   let r;
   for(let t=0;t<4;t++){
@@ -2071,8 +2095,22 @@ function liveWait(L,d){
   const spn=spById(L.sp).n,left=Math.max(0,Date.parse(d.ends_at)-lvNow(L.sp));
   app.innerHTML=`<div class="top"><div class="brand">🔴 تم تسليم امتحانك<small>${esc(spn)}</small></div><button class="pill" id="lvb">رجوع</button></div>
   <div class="sum"><div class="big">✅</div><p>سلّمت امتحانك خلال ${fmtT(d.secs)}.</p>
-  <p class="hint">النتيجة والأجوبة والترتيب تظهر بعد انتهاء الامتحان لجميع المشاركين (بعد حوالي ${cdTxt(left)})، حتى تبقى المنافسة عادلة. ارجع إلى هنا بعدها.</p></div>`;
+  <p class="hint">النتيجة والأجوبة والترتيب تظهر بعد انتهاء الامتحان لجميع المشاركين (بعد حوالي ${cdTxt(left)})، حتى تبقى المنافسة عادلة. ارجع إلى هنا بعدها.</p>${d.guest?'<p class="hint"><b>⚠️ مشاركتك تجريبية:</b> لا تُسجَّل نتيجتك ولا تدخل في الترتيب الحقيقي. سيظهر لك ترتيبك التقريبي فقط.</p>':''}</div>`;
   $('lvb').onclick=home;
+}
+async function liveGuestMine(sp){
+  const i=LV[sp].info,g=lvg(i.id);
+  if(!g||!g.ans){renderLive(sp);return}
+  loadingScreen('جارٍ حساب ترتيبك…');
+  let r;try{r=await rpc('live_guest_result',{p_id:i.id,p_answers:g.ans,p_secs:g.secs||0})}catch(e){r={error:{}}}
+  if(r.error||!r.data){toast(msgOf(r.error,{not_ended:'لم ينتهِ الامتحان بعد.'}));await liveLoad(sp,true);renderLive(sp);return}
+  const d=r.data,L={sp:sp,i:i,qs:d.questions,ans:g.ans};
+  if(!lsGet('bc_lvrec_'+i.id)){
+    lsSet('bc_lvrec_'+i.id,'1');
+    try{L.qs.forEach((q,k)=>{const rv=d.review.find(x=>x.id===q.id);dqRecord({id:q.id,s:q.s,sy:q.sy,ex:undefined},!!rv&&rv.a===L.ans[k],0)})}catch(e){}
+    ptFlush();
+  }
+  liveResult(L,d);
 }
 async function liveMine(sp){
   const i=LV[sp].info;loadingScreen('جارٍ تحميل نتيجتك…');
@@ -2093,10 +2131,11 @@ function liveResult(L,d){
   const has=Array.isArray(L.ans);
   const wrong=d.review.map((rv,k)=>({q:L.qs[k],rv:rv,mine:has?L.ans[k]:undefined})).filter(x=>!has||x.mine!==x.rv.a);
   app.innerHTML=`<div class="top"><div class="brand">🔴 نتيجة الامتحان الحي<small>${esc(spn)}</small></div><button class="pill" id="lvb">رجوع</button></div>
-  <div class="sum"><div class="big"><bdi dir="ltr">${ar(d.score)} / ${ar(d.n)}</bdi></div><p>الوقت ${fmtT(d.secs)}</p><div id="lvboard"><p class="hint">جارٍ حساب ترتيبك…</p></div><div id="lvshare"></div></div>
+  <div class="sum"><div class="big"><bdi dir="ltr">${ar(d.score)} / ${ar(d.n)}</bdi></div><p>الوقت ${fmtT(d.secs)}</p>${d.guest?`<p class="hint"><b>⚠️ مشاركة تجريبية:</b> نتيجتك لم تُسجَّل ولا تدخل في الترتيب الحقيقي.</p><p><b>ترتيبك التقريبي ${ar(d.rank)} من ${ar(d.total+1)}</b> لو قورنت بالمشاركين الرسميين (${ar(d.total)})، وهذا الرقم يظهر لك أنت فقط.</p><button class="btn line block" id="lvsub">اشترك لتدخل الترتيب الحقيقي</button>`:''}<div id="lvboard"><p class="hint">جارٍ حساب ترتيبك…</p></div><div id="lvshare"></div></div>
   <h3 class="sec">${has?'الأسئلة التي أخطأت بها':'الأسئلة وأجوبتها'} (${ar(wrong.length)})</h3>
   ${wrong.map(x=>`<details class="panel" style="margin-bottom:8px"><summary dir="${dirOf(x.q.q)}" style="font-weight:600">${esc(x.q.q.length>120?x.q.q.slice(0,120)+'…':x.q.q)}</summary>${imgHtml(x.q)}<p dir="${dirOf(x.q.o[x.rv.a])}"><b>الصحيح:</b> ${LET[x.rv.a]}) ${esc(x.q.o[x.rv.a])}</p>${x.rv.e?`<div class="exp" dir="${dirOf(x.rv.e)}"><b>الشرح</b>${fmt(x.rv.e)}</div>`:''}</details>`).join('')||'<div class="empty">لا أخطاء، ممتاز!</div>'}`;
   $('lvb').onclick=home;
+  const sb=$('lvsub');if(sb)sb.onclick=()=>subscribeModal('اشترك في الاختصاص لتشارك رسمياً ويُحتسب ترتيبك في امتحانات الجمعة.');
   liveBoard(L.sp,L.i.id,'lvboard',(my,total)=>{
     const body='🔴 امتحان Boardcard الحي ('+spn+')\nحصلت على '+ar(d.score)+'/'+ar(d.n)+(my?'، المركز '+ar(my.rnk)+' من '+ar(total):'')+'\n⏱ '+fmtT(d.secs)+'\nهل تقدر تتفوق عليّ؟ الجمعة القادمة 8 مساءً';
     const box=$('lvshare');if(!box)return;box.innerHTML=shareRow('lv');bindShareRow('lv',body+'\n'+url,url,body);
