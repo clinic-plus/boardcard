@@ -3294,6 +3294,43 @@ if('serviceWorker' in (navigator||{})&&window.addEventListener){
   window.addEventListener('load',()=>{try{navigator.serviceWorker.register('sw.js').catch(()=>{})}catch(e){}});
 }
 
+/* ---------- تنبيه «يوجد تحديث» ----------
+   كل نشر جديد يغيّر رقم الإصدار ?v= في index.html. نقارنه برقم الإصدار الذي يعمل الآن، وإذا اختلف يظهر شريط صغير
+   ويقرر المستخدم متى يضغط «تحديث». لا نعيد تحميل الصفحة تلقائياً حتى لا ينقطع طالب في منتصف حل أو امتحان. */
+(function(){
+  let cur='',shown=false,dismissed=0,last=0;
+  try{const sc=document.querySelector('script[src*="app.js"]');const m=sc&&/[?&]v=([\w.\-]+)/.exec(sc.getAttribute('src')||'');cur=m?m[1]:''}catch(e){}
+  if(!cur)return;   // بدون رقم إصدار لا نستطيع المقارنة
+  function bar(){
+    if(shown||document.getElementById('bc-upd'))return;shown=true;
+    const d=document.createElement('div');d.id='bc-upd';d.setAttribute('role','status');
+    d.style.cssText='position:fixed;z-index:99999;inset-inline:12px;top:calc(8px + env(safe-area-inset-top,0px));max-width:520px;margin-inline:auto;display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:16px;background:#1F5FBF;color:#fff;box-shadow:0 8px 28px rgba(0,0,0,.28);font:600 14px/1.4 inherit;direction:rtl';
+    d.innerHTML='<span style="flex:1">يوجد تحديث جديد للموقع</span><button id="bc-upd-go" style="background:#fff;color:#1F5FBF;border:0;border-radius:12px;padding:8px 14px;font:700 14px inherit;cursor:pointer">تحديث</button><button id="bc-upd-x" aria-label="لاحقاً" style="background:transparent;color:#fff;border:0;font:700 18px inherit;padding:4px 8px;cursor:pointer">✕</button>';
+    document.body.appendChild(d);
+    document.getElementById('bc-upd-x').onclick=()=>{d.remove();shown=false;dismissed=Date.now()};
+    document.getElementById('bc-upd-go').onclick=async()=>{
+      const b=document.getElementById('bc-upd-go');b.disabled=true;b.textContent='…';
+      try{if(typeof pushSyncNow==='function')await Promise.race([pushSyncNow(),new Promise(r=>setTimeout(r,2500))])}catch(e){}   // نحفظ ما لم يُرسل بعد
+      try{const rg=await navigator.serviceWorker.getRegistration();if(rg)await rg.update()}catch(e){}
+      location.reload();
+    };
+  }
+  async function check(){
+    if(shown||document.hidden||!navigator.onLine)return;
+    const now=Date.now();if(now-last<120000||now-dismissed<1800000)return;last=now;
+    try{
+      const r=await fetch(baseUrl()+'?_='+now,{cache:'no-store',headers:{Accept:'text/html'}});
+      if(!r.ok)return;
+      const t=await r.text(),m=/app\.js\?v=([\w.\-]+)/.exec(t);
+      if(m&&m[1]!==cur)bar();
+    }catch(e){}
+  }
+  setInterval(check,600000);                       // كل 10 دقائق والتطبيق مفتوح
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)check()});   // وعند الرجوع إليه
+  window.addEventListener('online',check);
+  setTimeout(check,45000);
+})();
+
 /* ---------- إصدار الموقع + تسجيل الأخطاء + إشعار التحديث ---------- */
 const BUILD='2026-11-17.2';
 const ERR={n:0,seen:{}};
