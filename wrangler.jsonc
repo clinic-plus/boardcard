@@ -5,14 +5,19 @@
   "assets": {
     "directory": "./",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*"]
+    // "/", "/admin" and "/admin.html" go through the Worker only so it can split the admin page onto its own host (ADMIN_HOST below)
+    "run_worker_first": ["/api/*", "/", "/admin", "/admin.html"]
   },
   "r2_buckets": [
     { "binding": "IMAGES", "bucket_name": "boardcard-images" },
     { "binding": "USERDATA", "bucket_name": "boardcard-userdata" }
   ],
+  // Put the admin panel on its own host, for example "admin.boardcard.net", AFTER you attach that custom domain to this Worker.
+  // Leave it empty until then, otherwise the admin page will redirect to a host that does not exist yet.
+  "vars": { "ADMIN_HOST": "admin.boardcard.net" },
   "ratelimits": [
-    { "name": "RL", "namespace_id": "1001",
-      "simple": { "limit": 30, "period": 60 } }
+    { "name": "RL",   "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } },
+    { "name": "RLW",  "namespace_id": "1002", "simple": { "limit": 6,  "period": 60 } },
+    { "name": "RLIP", "namespace_id": "1003", "simple": { "limit": 20, "period": 60 } }
   ]
 }

@@ -2,7 +2,8 @@
 # frame-ancestors stops other sites from embedding Boardcard or the admin panel inside their own page
 # (clickjacking). It cannot be set from a <meta> tag, so it lives here.
 /*
-  Content-Security-Policy: frame-ancestors 'none'
+  Content-Security-Policy: frame-ancestors 'none'; form-action 'self'
+  Cross-Origin-Opener-Policy: same-origin
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
@@ -14,6 +15,10 @@
   Cache-Control: no-cache
 
 # The admin panel is never stored by browsers or shown by search engines.
+# Cloudflare serves admin.html at /admin (it drops the .html), so both paths are listed.
+/admin
+  Cache-Control: no-store
+  X-Robots-Tag: noindex, nofollow
 /admin.html
   Cache-Control: no-store
   X-Robots-Tag: noindex, nofollow

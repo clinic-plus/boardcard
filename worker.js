@@ -52,6 +52,12 @@ async function limited(env, id) {
   }
 }
 
+// Per-IP limit (binding RLIP) for requests that cost a Supabase call; also used to cap anonymous junk.
+const ipOf = req => req.headers.get('CF-Connecting-IP') || '0';
+async function limitedBy(b, key) {
+  try { return b ? !(await b.limit({ key })).success : false; } catch (e) { return false; }
+}
+
 // ---- Token checks ----
 const b64u = x => { x = x.replace(/-/g, '+').replace(/_/g, '/'); return Uint8Array.from(atob(x + '='.repeat((4 - x.length % 4) % 4)), c => c.charCodeAt(0)); };
 const bearer = req => { const m = /^Bearer\s+(\S+)$/.exec(req.headers.get('Authorization') || ''); return m ? m[1] : null; };
@@ -114,23 +120,27 @@ async function whoamiRemote(token) {
 }
 
 // Any signed-in user. Checked locally when possible, so a student request costs no extra Supabase call.
-async function whoami(req) {
+async function whoami(req, env) {
   const t = bearer(req);
   if (!t) return null;
   const l = await verifyLocal(t);
   if (l !== undefined) return l;
+  // Undecidable locally (unknown kid / legacy signing): this falls back to a Supabase call, so cap it per IP.
+  if (await limitedBy(env.RLIP, 'ip:' + ipOf(req))) return null;
   return await whoamiRemote(t);
 }
 
 const rpcH = token => ({ apikey: KEY, Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', Accept: 'application/json' });
 
 // Admin check: a single call to the database function is_admin(), which also enforces the second login step.
-async function isAdmin(req) {
+async function isAdmin(req, env) {
   try {
     const t = bearer(req);
     if (!t) return false;
     // A forged or expired token is refused here, so junk requests to the admin routes never reach Supabase.
-    if ((await verifyLocal(t)) === null) return false;
+    const v = await verifyLocal(t);
+    if (v === null) return false;
+    if (v === undefined && await limitedBy(env.RLIP, 'ip:' + ipOf(req))) return false;
     const r = await fetch(SB + '/rest/v1/rpc/is_admin', { method: 'POST', headers: rpcH(t), body: '{}' });
     if (!r.ok) return false;
     return (await r.json()) === true;
@@ -169,7 +179,7 @@ function newPath(ext) {
 
 async function img(req, env, url) {
   if (req.method !== 'POST' && req.method !== 'DELETE') return json({ error: 'method' }, 405);
-  if (!(await isAdmin(req))) return json({ error: 'forbidden' }, 403);
+  if (!(await isAdmin(req, env))) return json({ error: 'forbidden' }, 403);
 
   if (req.method === 'DELETE') {
     const p = url.searchParams.get('path') || '';
@@ -198,7 +208,7 @@ async function data(req, env, url) {
   const m = /^\/api\/data\/(notes|pq|progress)$/.exec(url.pathname);
   if (m) {
     const k = KINDS[m[1]];
-    const me = await whoami(req);
+    const me = await whoami(req, env);
     if (!me) return json({ error: 'forbidden' }, 403);
     const key = 'users/' + me.id + '/' + k.file;
     if (await limited(env, me.id)) return json({ error: 'rate' }, 429);
@@ -208,6 +218,8 @@ async function data(req, env, url) {
       return new Response(o.body, { headers: { 'Content-Type': 'application/gzip', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Data-Etag': o.etag } });
     }
     if (req.method === 'PUT') {
+      // Writes are the costly R2 operation: a tighter per-account limit than reads.
+      if (await limitedBy(env.RLW, 'w:' + me.id)) return json({ error: 'rate' }, 429);
       // A blocked account, or a device whose session was replaced by a newer login, cannot write.
       const g = await gateOf(me);
       if (g && g.blocked) return json({ error: 'blocked' }, 403);
@@ -230,7 +242,7 @@ async function data(req, env, url) {
     return json({ error: 'method' }, 405);
   }
   if (url.pathname === '/api/data' && req.method === 'DELETE') {
-    if (!(await isAdmin(req))) return json({ error: 'forbidden' }, 403);
+    if (!(await isAdmin(req, env))) return json({ error: 'forbidden' }, 403);
     const uid = url.searchParams.get('uid') || '';
     if (!UUID_RE.test(uid)) return json({ error: 'bad_uid' }, 400);
     const l = await env.USERDATA.list({ prefix: 'users/' + uid.toLowerCase() + '/' });
@@ -246,7 +258,7 @@ async function data(req, env, url) {
 // Admin-only read access to both buckets, used by the full-backup and usage panel in the admin page.
 async function adminR2(req, env, url) {
   if (req.method !== 'GET') return json({ error: 'method' }, 405);
-  if (!(await isAdmin(req))) return json({ error: 'forbidden' }, 403);
+  if (!(await isAdmin(req, env))) return json({ error: 'forbidden' }, 403);
   const b = url.searchParams.get('b');
   const bucket = b === 'img' ? env.IMAGES : b === 'user' ? env.USERDATA : null;
   if (!bucket) return json({ error: 'bad_bucket' }, 400);
@@ -271,7 +283,7 @@ async function adminR2(req, env, url) {
 // Usage metrics from the Cloudflare GraphQL API. Needs the secret CF_API_TOKEN (Account Analytics: Read).
 const CLASS_A = ['ListBuckets','PutBucket','ListObjects','ListObjectsV2','PutObject','CopyObject','CompleteMultipartUpload','CreateMultipartUpload','ListMultipartUploads','UploadPart','UploadPartCopy','PutBucketEncryption','PutBucketCors','PutBucketLifecycleConfiguration','LifecycleStorageTierTransition'];
 async function metrics(req, env) {
-  if (!(await isAdmin(req))) return json({ error: 'forbidden' }, 403);
+  if (!(await isAdmin(req, env))) return json({ error: 'forbidden' }, 403);
   // The admin page shows the setup hint for this exact code.
   if (!env.CF_API_TOKEN) return json({ error: 'no_token' });
   const h = { Authorization: 'Bearer ' + env.CF_API_TOKEN, 'Content-Type': 'application/json' };
@@ -309,9 +321,17 @@ async function metrics(req, env) {
   }
 }
 
+// The admin page can live on its own host (variable ADMIN_HOST, e.g. admin.boardcard.net) so that its login token is
+// stored on a different origin from the student site. Empty ADMIN_HOST = old behaviour (same host for both).
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
+    const AH = String(env.ADMIN_HOST || '').trim().toLowerCase();
+    if (AH && !url.pathname.startsWith('/api/')) {
+      const onAdmin = url.hostname.toLowerCase() === AH;
+      if (onAdmin && url.pathname === '/') return env.ASSETS.fetch(new Request(new URL('/admin', url), req));
+      if (!onAdmin && (url.pathname === '/admin' || url.pathname === '/admin.html')) return Response.redirect('https://' + AH + '/', 302);
+    }
     try {
       if (url.pathname === '/api/img') return await img(req, env, url);
       if (url.pathname === '/api/data' || url.pathname.startsWith('/api/data/')) return await data(req, env, url);

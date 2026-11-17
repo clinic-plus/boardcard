@@ -94,8 +94,12 @@ const fdate=d=>{d=new Date(d);return ar(d.getFullYear()+'/'+(d.getMonth()+1)+'/'
 /* ---------- طبقة البيانات (Supabase) ---------- */
 const Store={specialties:[],subjects:[],systems:[],counts:[],qmap:{},loadedS:{},freeLoaded:false,user:null,profile:null,premium:false,subs:{},isAdmin:false,ready:false,err:false};
 const NONE={id:'_none',n:'مواد بدون اختصاص',c:'#5A6B77'};
-const subjOf=id=>Store.subjects.find(s=>s.id===id)||{id:id,n:'مادة محذوفة',c:'#5A6B77'};
-const spOfSubj=s=>Store.specialties.some(p=>p.id===s.sp)?s.sp:'_none';
+// Map/Set lookups instead of a linear scan per call; rebuilt when the arrays change and in sortStore()
+let _sjM=null,_sjA=null,_sjN=-1,_spS=null,_spA=null,_spN=-1;
+function reindex(){_sjM=new Map(Store.subjects.map(s=>[s.id,s]));_sjA=Store.subjects;_sjN=Store.subjects.length;_spS=new Set(Store.specialties.map(p=>p.id));_spA=Store.specialties;_spN=Store.specialties.length}
+const idxStale=()=>_sjA!==Store.subjects||_sjN!==Store.subjects.length||_spA!==Store.specialties||_spN!==Store.specialties.length;
+const subjOf=id=>{if(idxStale())reindex();return _sjM.get(id)||{id:id,n:'مادة محذوفة',c:'#5A6B77'}};
+const spOfSubj=s=>{if(idxStale())reindex();return _spS.has(s.sp)?s.sp:'_none'};
 const spById=id=>id==='_none'?NONE:(Store.specialties.find(p=>p.id===id)||NONE);
 const qSp=q=>spOfSubj(subjOf(q.s));
 const subjectsOf=id=>Store.subjects.filter(s=>spOfSubj(s)===id);
@@ -104,7 +108,7 @@ function spList(){const l=Store.specialties.slice();if(Store.subjects.some(s=>sp
 const mw=n=>ar(n)+' '+(n===1?'مادة':n===2?'مادتين':'مواد');
 function sortStore(){
   const byOrd=(a,b)=>(a.ord||0)-(b.ord||0)||String(a.id).localeCompare(String(b.id));
-  Store.specialties.sort(byOrd);Store.subjects.sort(byOrd);Store.systems.sort(byOrd);
+  Store.specialties.sort(byOrd);Store.subjects.sort(byOrd);Store.systems.sort(byOrd);reindex();
   const byT=(a,b)=>(Number(a.t)||0)-(Number(b.t)||0)||String(a.id).localeCompare(String(b.id));
 }
 const newId=p=>p+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
@@ -292,6 +296,10 @@ function admin(){
     body=`<div id="stbox"><p class="hint">جارٍ حساب الأرقام…</p></div>`;
   }else if(A.tab==='errors'){
     body=`<p class="hint">أخطاء برمجية حدثت في أجهزة الطلاب. كل نوع خطأ يظهر مرة واحدة مع عدد مراته. إذا ظهر خطأ جديد بعد تحديث، فالتحديث غالباً هو السبب.</p><div class="r2" style="margin-bottom:10px"><button class="btn line" id="erl">⟳ تحديث</button><button class="btn line" id="erc">مسح الكل</button></div><div id="erlist"><p class="hint">جارٍ التحميل…</p></div>`;
+  }else if(A.tab==='dev'){
+    body=`<p class="hint">حسابات سُجّل دخولها من 3 أجهزة مختلفة أو أكثر خلال آخر 7 أيام. الحساب يعمل على جهاز واحد في كل وقت، فهذا العدد يعني أن الدخول تكرر من أجهزة كثيرة، وغالباً هذا يدل على مشاركة الحساب. تقدر تحظر الحساب، أو تصفّر العدّاد بعد أن تنبّه الطالب.</p><div class="r2" style="margin-bottom:10px"><button class="btn line" id="dvl">⟳ تحديث</button></div><div id="dvlist"><p class="hint">جارٍ التحميل…</p></div>`;
+  }else if(A.tab==='audit'){
+    body=`<p class="hint">آخر التغييرات على الاشتراكات وأكواد التفعيل: من غيّر وماذا ومتى.</p><div class="r2" style="margin-bottom:10px"><button class="btn line" id="aul">⟳ تحديث</button></div><div id="aulist"><p class="hint">جارٍ التحميل…</p></div>`;
   }else if(A.tab==='trash'){
     body=`<p class="hint">أي أسئلة تُحذف (حتى لو حُذفت مادتها بالكامل) تبقى هنا 30 يوماً ويمكنك استرجاعها.</p><div id="trlist"><p class="hint">جارٍ التحميل…</p></div>`;
   }else if(A.tab==='lb'){
@@ -333,7 +341,9 @@ function admin(){
     <button data-t="ann" aria-pressed="${A.tab==='ann'}">الإعلانات</button>
     <button data-t="lb" aria-pressed="${A.tab==='lb'}">لوحة الشرف</button>
     <button data-t="trash" aria-pressed="${A.tab==='trash'}">المحذوفات</button>
-    <button data-t="errors" aria-pressed="${A.tab==='errors'}">الأخطاء</button></div>
+    <button data-t="errors" aria-pressed="${A.tab==='errors'}">الأخطاء</button>
+    <button data-t="dev" aria-pressed="${A.tab==='dev'}">الأجهزة</button>
+    <button data-t="audit" aria-pressed="${A.tab==='audit'}">السجل</button></div>
   ${backupBanner()}${body}`;
   {const nt=app.querySelector('.tabs');
    if(nt){
@@ -379,6 +389,12 @@ function admin(){
     loadUsageTab();
   }else if(A.tab==='stats'){
     loadStats();
+  }else if(A.tab==='dev'){
+    $('dvl').onclick=()=>loadDevs();
+    loadDevs();
+  }else if(A.tab==='audit'){
+    $('aul').onclick=()=>loadAudit();
+    loadAudit();
   }else if(A.tab==='errors'){
     $('erl').onclick=()=>loadErrors();
     $('erc').onclick=async()=>{
@@ -910,6 +926,46 @@ async function fullBackup(){
   }catch(e){say(e.message||errMsg(e))}
 }
 /* ---------- تبويب الأخطاء ---------- */
+async function loadDevs(){
+  const el=$('dvlist');if(!el)return;
+  const r=await sb.rpc('admin_device_flags',{p_days:7,p_min:3});
+  if(!$('dvlist'))return;
+  if(r.error){el.innerHTML=`<p class="err">${/admin_device_flags|schema cache|does not exist|Could not find/i.test((r.error.message||'')+(r.error.details||''))?'ميزة الأجهزة غير مفعّلة بعد في قاعدة البيانات.':esc(errMsg(r.error))}</p>`;return}
+  const rows=r.data||[];
+  el.innerHTML=rows.length?rows.map((x,i)=>`<div class="item" style="--sc:${x.blocked?'#B93A32':'#C77A00'}"><div class="grow">
+      <div class="nm">${esc(x.full_name||x.username||'')}${x.blocked?' <span class="lock">موقوف</span>':''}</div>
+      <div class="sub"><bdi dir="ltr">${esc(x.username||'')}</bdi> · ${ar(x.devs)} أجهزة مختلفة · آخر دخول ${fdate(x.last_seen)}</div>
+      <div class="sub">${x.phone?'الهاتف: '+phoneHtml(x.phone):'لا يوجد رقم هاتف لهذا الحساب. أضفه من تبويب الطلاب ثم «تعديل».'}</div>
+    </div><div class="acts2"><button class="ib" data-dvr="${i}">تصفير</button><button class="ib del" data-dvb="${i}">${x.blocked?'فك الحظر':'حظر'}</button></div></div>`).join('')
+    :'<div class="empty">لا توجد حسابات بأجهزة متعددة حالياً.</div>';
+  el.querySelectorAll('[data-dvr]').forEach(b=>b.onclick=async()=>{
+    const x=rows[+b.dataset.dvr];
+    if(!(await askConfirm('تصفير عدّاد الأجهزة','سيبدأ عدّ أجهزة «'+(x.full_name||x.username)+'» من الصفر. استعمل هذا بعد أن تنبّه الطالب.','صفّر')))return;
+    const d=await sb.rpc('admin_devices_reset',{p_user:x.id});
+    if(d.error){toast(errMsg(d.error));return}
+    loadDevs();
+  });
+  el.querySelectorAll('[data-dvb]').forEach(b=>b.onclick=async()=>{
+    const x=rows[+b.dataset.dvb],to=!x.blocked;
+    if(!(await askConfirm(to?'حظر الحساب':'فك الحظر',(to?'سيُوقف حساب «':'سيُفتح حساب «')+(x.full_name||x.username)+'».',to?'احظر':'افتح')))return;
+    const d=await sb.rpc('admin_set_blocked',{p_user:x.id,p_blocked:to});
+    if(d.error){toast(errMsg(d.error));return}
+    loadDevs();
+  });
+}
+async function loadAudit(){
+  const el=$('aulist');if(!el)return;
+  const r=await sb.rpc('admin_audit_list',{p_limit:200});
+  if(!$('aulist'))return;
+  if(r.error){el.innerHTML=`<p class="err">${/admin_audit_list|schema cache|does not exist|Could not find/i.test((r.error.message||'')+(r.error.details||''))?'سجل التدقيق غير مفعّل بعد في قاعدة البيانات.':esc(errMsg(r.error))}</p>`;return}
+  const rows=r.data||[];
+  const TB={subscriptions:'اشتراك',activation_codes:'كود تفعيل'},OP={INSERT:'إضافة',UPDATE:'تعديل',DELETE:'حذف'};
+  el.innerHTML=rows.length?rows.map(x=>`<div class="item" style="--sc:#5A6B77;align-items:flex-start"><div class="grow">
+      <div class="nm">${esc(OP[x.op]||x.op)} · ${esc(TB[x.tbl]||x.tbl)}</div>
+      <div class="sub">${fdate(x.at)} ${ar(new Date(x.at).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}))} · بواسطة <bdi dir="ltr">${esc(x.actor_name||'—')}</bdi></div>
+      <details><summary class="sub" style="cursor:pointer">التفاصيل</summary><pre dir="ltr" style="white-space:pre-wrap;word-break:break-all;font-size:11px;margin:6px 0 0">${esc(JSON.stringify(x.diff,null,1))}</pre></details>
+    </div></div>`).join(''):'<div class="empty">لا توجد تغييرات مسجلة بعد.</div>';
+}
 async function loadErrors(){
   const el=$('erlist');if(!el)return;
   const r=await sb.rpc('admin_errors');
@@ -996,7 +1052,7 @@ async function exportBackup(kind){
       try{localStorage.setItem('bc_last_backup',String(Date.now()))}catch(e){}
     }else{
       const spn={},sun={},syn={};sp.forEach(x=>{spn[x.id]=x.n});su.forEach(x=>{sun[x.id]={n:x.n,sp:spn[x.sp]||''}});sy.forEach(x=>{syn[x.id]=x.n});
-      const cell=v=>{v=String(v==null?'':v);return /[",\n\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v};
+      const cell=v=>{v=String(v==null?'':v);if(/^[=+\-@\t\r]/.test(v))v="'"+v;return /[",\n\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v};
       const head=['id','specialty','subject','system','exam','year','free','question','A','B','C','D','E','F','correct','explanation'];
       const lines=[head.join(',')].concat(qs.map(q=>{
         const o=q.o||[],s=sun[q.s]||{n:q.s,sp:''};
@@ -1135,15 +1191,19 @@ function renderUsers(){
     const stud=u.role!=='admin';
     const pend=u.codes||[];
     const stTxt=u.blocked?'موقوف':(act?'فعّال':(subs.length?'منتهي':(pend.length?'بانتظار التفعيل':'بدون اشتراك')));
-    const subsHtml=subs.length?subs.map(x=>{const on=new Date(x.exp)>now;return `<div class="sub" style="margin-top:4px"><b>${esc(spById(x.sp).n)}</b>${on?'':' (منتهي)'}<br>تاريخ الاشتراك: ${fdate(x.st||u.created_at)}، تاريخ الانتهاء: ${fdate(x.exp)}${on&&(new Date(x.exp)-now)<=7*864e5?` <b style="color:#B93A32">⚠ باقي ${ar(Math.max(1,Math.ceil((new Date(x.exp)-now)/864e5)))} يوم</b>`:''}</div>`}).join(''):(pend.length?'':'<div class="sub" style="margin-top:4px">لا يوجد اشتراك.</div>');
-    const pendHtml=pend.map(c=>`<div class="sub" style="margin-top:4px;color:#8A5F0A"><b>رمز تفعيل لم يُستخدم:</b> <bdi dir="ltr" style="font-family:ui-monospace,Menlo,monospace;user-select:all">${esc(c.code)}</bdi><br>${esc(spById(c.sp).n)}، ${ar(c.days)} يوم. يبدأ الاشتراك وتظهر تواريخه عندما يدخل الطالب الرمز، أو اضغط «تفعيل الآن».</div>`).join('');
-    const refHtml=stud?`<div class="sub" style="margin-top:4px">كود دعوته: <bdi dir="ltr" style="font-family:ui-monospace,Menlo,monospace;user-select:all">${esc(u.ref_code||'')}</bdi>، المشتركون بكوده: <b>${ar(u.ref_cnt||0)}</b>${u.ref_pend?' (بانتظار الاشتراك '+ar(u.ref_pend)+')':''}${u.ref_by?`، دعاه: <b>${esc(u.ref_by)}</b>${u.ref_by_amb?' 🎓 سفير، يستحق المدعو خصم 30% + 3 أيام':''} (${({pending:'بانتظار أول اشتراك',rewarded:'تمت المكافأة',no_inviter_sub:'تمت مكافأته، والداعي بلا اشتراك',invalid:'غير صالحة'})[u.ref_status]||esc(u.ref_status||'')})`:''}</div>`:'';
-    const ambHtml=stud&&u.is_amb?`<div class="sub" style="margin-top:4px">🎓 <b>سفير دفعة</b>: مستحقاته النقدية ${ar(u.ref_amb||0)} اشتراك × ${ar('3,000')} د. المدفوع له ${ar(u.ref_paid||0)} من ${ar(u.ref_amb||0)}، المتبقي <b>${ar((((u.ref_amb||0)-(u.ref_paid||0))*3000).toLocaleString('en'))} د</b></div>`:'';
-    const pwHtml='';
-    return `<div class="item" style="--sc:${u.blocked?'#B93A32':(act?'#1F5FBF':'#5A6B77')};align-items:flex-start"><div class="grow"><div class="nm">${esc(u.full_name||'بدون اسم')}${u.role==='admin'?' (أدمن)':''}</div>
-      <div class="sub">اسم المستخدم: <bdi dir="ltr" style="user-select:all">${esc(u.username||'')}</bdi></div>${pwHtml}${refHtml}${ambHtml}
-      <div class="sub" style="margin-top:4px">الحالة: ${stTxt}، تاريخ إنشاء الحساب: ${fdate(u.created_at)}${u.last_login?'، آخر دخول '+fdate(u.last_login):''}</div>${subsHtml}${pendHtml}
-      <div class="acts3"><button class="ib" data-ur="${esc(u.id)}">تجديد</button>${stud?`${pend.length?`<button class="ib" data-uact="${esc(u.id)}">تفعيل الآن</button>`:''}<button class="ib" data-ued="${esc(u.id)}">تعديل</button><button class="ib" data-uamb="${esc(u.id)}">${u.is_amb?'إلغاء السفير':'تحويل إلى سفير'}</button>${u.is_amb?`<button class="ib" data-upaid="${esc(u.id)}">تسجيل دفع</button>`:''}<button class="ib" data-ucp="${esc(u.id)}">نسخ المعلومات</button>${act?`<button class="ib" data-uchg="${esc(u.id)}">تغيير الاشتراك</button><button class="ib del" data-ucan="${esc(u.id)}">إلغاء الاشتراك</button>`:''}<button class="ib" data-up="${esc(u.id)}">كلمة سر جديدة</button><button class="ib ${u.blocked?'':'del'}" data-ub="${esc(u.id)}">${u.blocked?'رفع الإيقاف':'إيقاف'}</button><button class="ib del" data-udel="${esc(u.id)}">حذف</button>`:''}</div></div></div>`}).join('')+(list.length>UN?`<button class="btn line block" id="umore">عرض المزيد (المعروض ${ar(UN)} من ${ar(list.length)})</button>`:'')
+    // compact card: one line per subscription, invitation details folded, secondary actions in a "more" menu
+    const left=x=>Math.max(1,Math.ceil((new Date(x.exp)-now)/864e5));
+    const subsHtml=subs.length?subs.map(x=>{const on=new Date(x.exp)>now,soon=on&&(new Date(x.exp)-now)<=7*864e5;
+      return `<div class="sub ucl"><b>${esc(spById(x.sp).n)}</b> · ${on?'ينتهي':'انتهى'} ${fdate(x.exp)}${soon?` <b class="uwarn">⚠ باقي ${ar(left(x))} يوم</b>`:''}<span class="uf"> · بدأ ${fdate(x.st||u.created_at)}</span></div>`}).join(''):(pend.length?'':'<div class="sub ucl">لا يوجد اشتراك.</div>');
+    const pendHtml=pend.map(c=>`<div class="sub ucl" style="color:#8A5F0A">🔑 رمز لم يُستخدم: <bdi dir="ltr" style="font-family:ui-monospace,Menlo,monospace;user-select:all">${esc(c.code)}</bdi> · ${esc(spById(c.sp).n)} · ${ar(c.days)} يوم</div>`).join('');
+    const refTxt=stud?`كود دعوته: <bdi dir="ltr" style="font-family:ui-monospace,Menlo,monospace;user-select:all">${esc(u.ref_code||'')}</bdi>، المشتركون بكوده: <b>${ar(u.ref_cnt||0)}</b>${u.ref_pend?' (بانتظار الاشتراك '+ar(u.ref_pend)+')':''}${u.ref_by?`<br>دعاه: <b>${esc(u.ref_by)}</b>${u.ref_by_amb?' 🎓 سفير، يستحق المدعو خصم 30% + 3 أيام':''} (${({pending:'بانتظار أول اشتراك',rewarded:'تمت المكافأة',no_inviter_sub:'تمت مكافأته، والداعي بلا اشتراك',invalid:'غير صالحة'})[u.ref_status]||esc(u.ref_status||'')})`:''}`:'';
+    const ambTxt=stud&&u.is_amb?`<br>🎓 <b>سفير دفعة</b>: مستحقاته ${ar(u.ref_amb||0)} اشتراك × ${ar('3,000')} د، المدفوع له ${ar(u.ref_paid||0)} من ${ar(u.ref_amb||0)}، المتبقي <b>${ar((((u.ref_amb||0)-(u.ref_paid||0))*3000).toLocaleString('en'))} د</b>`:'';
+    const detHtml=stud?`<details class="udet"><summary>الدعوة وتفاصيل الحساب${u.is_amb?' 🎓':''}</summary><div class="sub">${refTxt}${ambTxt}<br>أُنشئ الحساب ${fdate(u.created_at)}${u.last_login?'، آخر دخول '+fdate(u.last_login):''}</div></details>`:'';
+    const chip=`<span class="uch ${u.blocked?'bad':(act?'ok':'off')}">${stTxt}</span>`;
+    const more=stud?`<details class="umore"><summary class="ib">المزيد ▾</summary><div class="umenu"><button class="ib" data-uamb="${esc(u.id)}">${u.is_amb?'إلغاء السفير':'تحويل إلى سفير'}</button>${u.is_amb?`<button class="ib" data-upaid="${esc(u.id)}">تسجيل دفع</button>`:''}<button class="ib" data-ucp="${esc(u.id)}">نسخ المعلومات</button>${act?`<button class="ib" data-uchg="${esc(u.id)}">تغيير الاشتراك</button><button class="ib del" data-ucan="${esc(u.id)}">إلغاء الاشتراك</button>`:''}<button class="ib" data-up="${esc(u.id)}">كلمة سر جديدة</button><button class="ib ${u.blocked?'':'del'}" data-ub="${esc(u.id)}">${u.blocked?'رفع الإيقاف':'إيقاف'}</button><button class="ib del" data-udel="${esc(u.id)}">حذف</button></div></details>`:'';
+    return `<div class="item uc" style="--sc:${u.blocked?'#B93A32':(act?'#1F5FBF':'#5A6B77')};align-items:flex-start"><div class="grow"><div class="nm">${esc(u.full_name||'بدون اسم')}${u.role==='admin'?' (أدمن)':''} ${chip}</div>
+      <div class="sub ucl"><bdi dir="ltr" style="user-select:all">@${esc(u.username||'')}</bdi>${u.phone?' · '+phoneHtml(u.phone):''}</div>${subsHtml}${pendHtml}${detHtml}
+      <div class="acts3"><button class="ib" data-ur="${esc(u.id)}">تجديد</button>${stud?`${pend.length?`<button class="ib" data-uact="${esc(u.id)}">تفعيل الآن</button>`:''}<button class="ib" data-ued="${esc(u.id)}">تعديل</button>`:''}${more}</div></div></div>`}).join('')+(list.length>UN?`<button class="btn line block" id="umore">عرض المزيد (المعروض ${ar(UN)} من ${ar(list.length)})</button>`:'')
     :'<div class="empty">لا يوجد طلاب مطابقون.</div>';
   {const um=$('umore');if(um)um.onclick=()=>{A.un=UN+40;renderUsers()}}
   el.querySelectorAll('[data-ur]').forEach(b=>b.onclick=()=>renewForm(USERS.find(x=>x.id===b.dataset.ur)));
@@ -1330,6 +1390,12 @@ function showCredentials(title,rows,message){
     ${rows.some(r=>/كلمة السر/.test(r[0]))?'<p class="hint" style="margin-top:10px">كلمة السر لا تُحفظ ولن تظهر مرة ثانية. انسخ الرسالة الآن وأرسلها للطالب، وإذا ضاعت أنشئ له كلمة سر جديدة.</p>':''}`);
   $('cl').onclick=closeModal;$('cpm').onclick=()=>copyText(message);
 }
+// optional phone: shown as a call link and a WhatsApp link (Iraqi numbers 07xxxxxxxxx become +9647xxxxxxxxx for WhatsApp)
+function phoneHtml(p){
+  p=String(p||'').trim();if(!p)return '';
+  const wa=p.replace(/^\+/,'').replace(/^00/,'').replace(/^0/,'964');
+  return `<bdi dir="ltr" style="user-select:all">${esc(p)}</bdi> · <a href="tel:${esc(p)}">اتصال</a> · <a href="https://wa.me/${esc(wa)}" target="_blank" rel="noopener noreferrer">واتساب</a>`;
+}
 function createStudentForm(){
   if(!Store.specialties.length){toast('أضف اختصاصاً أولاً');return}
   const pw=genPass();
@@ -1339,22 +1405,24 @@ function createStudentForm(){
     <label class="fld"><span>اسم المستخدم (إنكليزي بدون مسافات)</span><input class="in" id="su" autocapitalize="none" spellcheck="false" maxlength="30" style="direction:ltr;text-align:left"></label>
     <label class="fld"><span>كلمة السر (8 أحرف على الأقل)</span><input class="in" id="sp2" value="${pw}" style="direction:ltr;text-align:left;font-family:ui-monospace,Menlo,monospace"></label>
     <label class="fld"><span>مدة الاشتراك بالأيام</span><input class="in" id="sd" type="number" min="1" max="365" value="30" style="direction:ltr;text-align:center"></label>
+    <label class="fld"><span>رقم الهاتف (اختياري): للتواصل مع الطالب إذا حصل شك في مشاركة الحساب، ولا يراه غيرك</span><input class="in" id="sph" type="tel" inputmode="tel" autocomplete="off" maxlength="20" placeholder="07xxxxxxxxx" style="direction:ltr;text-align:left"></label>
     ${priceField('spr','المبلغ المدفوع بالدينار (للإيراد)')}
     <label class="fld"><span>كود الداعي (اختياري): عادي = الداعي 7 أيام والطالب 3 أيام. سفير = الداعي 10 أيام + 3,000 د والطالب 3 أيام + خصم 30% (تطبقه أنت عند الدفع)</span><input class="in" id="sref" autocapitalize="characters" spellcheck="false" maxlength="10" placeholder="مثلاً K7M2QX" style="direction:ltr;text-align:left;text-transform:uppercase"></label>
     <p class="err" id="er" role="alert"></p><button class="btn block" id="sv">إنشاء الحساب والكود</button>`);
   $('cl').onclick=closeModal;
   $('sv').onclick=async()=>{
-    const specialty_id=$('ssp').value,full_name=$('sn').value.trim(),username=$('su').value.trim().toLowerCase(),password=$('sp2').value,days=parseInt($('sd').value,10),ref_code=$('sref').value.trim().toUpperCase();
+    const specialty_id=$('ssp').value,full_name=$('sn').value.trim(),username=$('su').value.trim().toLowerCase(),password=$('sp2').value,days=parseInt($('sd').value,10),ref_code=$('sref').value.trim().toUpperCase(),phone=$('sph').value.trim();
     if(!/^[a-z0-9._-]{3,30}$/.test(username)){$('er').textContent='اسم المستخدم: 3 إلى 30 حرفاً إنكليزياً أو أرقاماً أو . _ -';return}
+    if(phone&&!/^\+?[0-9\u0660-\u0669\s\-()]{7,20}$/.test(phone)){$('er').textContent='رقم الهاتف غير صحيح. اتركه فارغاً إن لم يتوفر.';return}
     if(password.length<8){$('er').textContent='كلمة السر 8 أحرف على الأقل.';return}
     if(!(days>=1&&days<=365)){$('er').textContent='المدة من 1 إلى 365 يوم.';return}
     const price=readPrice('spr');
     if(price===null){$('er').textContent='اكتب المبلغ المدفوع (0 إذا مجاني).';return}
     $('sv').disabled=true;
-    const r=await sb.functions.invoke('student-admin',{body:{action:'create',username,password,full_name,days,specialty_id,ref_code,price}});
+    const r=await sb.functions.invoke('student-admin',{body:{action:'create',username,password,full_name,days,specialty_id,ref_code,price,phone}});
     let err=r.error?'تعذر إنشاء الحساب. جرب مرة ثانية.':null,d=r.data;
     if(r.error&&r.error.context&&r.error.context.json){try{d=await r.error.context.json()}catch(e){}}
-    if(d&&d.error)err=({username_taken:'اسم المستخدم مستخدم من قبل.',bad_username:'اسم المستخدم غير صالح.',bad_password:'كلمة السر غير صالحة.',forbidden:'ما عندك صلاحية.',create_failed:'تعذر إنشاء الحساب. جرب اسم مستخدم آخر.',bad_specialty:'اختر الاختصاص.',bad_ref:'كود الداعي غير صحيح.'})[d.error]||err;
+    if(d&&d.error)err=({username_taken:'اسم المستخدم مستخدم من قبل.',bad_username:'اسم المستخدم غير صالح.',bad_password:'كلمة السر غير صالحة.',forbidden:'ما عندك صلاحية.',create_failed:'تعذر إنشاء الحساب. جرب اسم مستخدم آخر.',bad_specialty:'اختر الاختصاص.',bad_ref:'كود الداعي غير صحيح.',bad_phone:'رقم الهاتف غير صحيح. اتركه فارغاً إن لم يتوفر.'})[d.error]||err;
     if(err||!d||!d.code){$('er').textContent=err||'تعذر إنشاء الحساب.';$('sv').disabled=false;return}
     if(d.sale)rememberPrice(price);else await recordSale({kind:'student',sp:specialty_id,days:days,qty:1,price:price,note:full_name});
     const spn=spById(specialty_id).n;
@@ -1408,19 +1476,21 @@ function editStudentForm(u){
   showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>تعديل بيانات الطالب</h2>
     <label class="fld"><span>الاسم</span><input class="in" id="en" maxlength="60" value="${esc(u.full_name||'')}"></label>
     <label class="fld"><span>اسم المستخدم (إنكليزي بدون مسافات)</span><input class="in" id="eu" autocapitalize="none" spellcheck="false" maxlength="30" value="${esc(u.username||'')}" style="direction:ltr;text-align:left"></label>
+    <label class="fld"><span>رقم الهاتف (اختياري، لا يراه غيرك)</span><input class="in" id="eph" type="tel" inputmode="tel" autocomplete="off" maxlength="20" value="${esc(u.phone||'')}" placeholder="07xxxxxxxxx" style="direction:ltr;text-align:left"></label>
     ${(!u.ref_by&&!(u.subs||[]).length)?`<label class="fld"><span>كود الداعي (اختياري، قبل أول اشتراك فقط)</span><input class="in" id="eref" autocapitalize="characters" spellcheck="false" maxlength="10" style="direction:ltr;text-align:left;text-transform:uppercase"></label>`:''}
     <p class="hint">تغيير اسم المستخدم يعني أن الطالب يدخل به من الآن، فأبلغه بالاسم الجديد.</p>
     <p class="err" id="er" role="alert"></p><button class="btn block" id="sv">حفظ</button>`);
   $('cl').onclick=closeModal;
   $('sv').onclick=async()=>{
-    const full_name=$('en').value.trim(),username=$('eu').value.trim().toLowerCase();
+    const full_name=$('en').value.trim(),username=$('eu').value.trim().toLowerCase(),phone=$('eph').value.trim();
     if(!/^[a-z0-9._-]{3,30}$/.test(username)){$('er').textContent='اسم المستخدم: 3 إلى 30 حرفاً إنكليزياً أو أرقاماً أو . _ -';return}
+    if(phone&&!/^\+?[0-9\u0660-\u0669\s\-()]{7,20}$/.test(phone)){$('er').textContent='رقم الهاتف غير صحيح. اتركه فارغاً لحذفه.';return}
     $('sv').disabled=true;
-    const r=await sb.functions.invoke('student-admin',{body:{action:'update',user_id:u.id,full_name,username}});
+    const r=await sb.functions.invoke('student-admin',{body:{action:'update',user_id:u.id,full_name,username,phone}});
     let d=r.data;
     if(r.error&&r.error.context&&r.error.context.json){try{d=await r.error.context.json()}catch(e){}}
     if(r.error||(d&&d.error)){
-      $('er').textContent=(d&&d.error==='username_taken')?'اسم المستخدم مستخدم من قبل.':'تعذر حفظ التعديل. جرب مرة ثانية.';
+      $('er').textContent=(d&&d.error==='username_taken')?'اسم المستخدم مستخدم من قبل.':(d&&d.error==='bad_phone')?'رقم الهاتف غير صحيح.':'تعذر حفظ التعديل. جرب مرة ثانية.';
       $('sv').disabled=false;return;
     }
     const rc=$('eref')?$('eref').value.trim().toUpperCase():'';
@@ -1927,7 +1997,9 @@ async function startAdmin(){
     if(!g.data.session){adminLogin();return}
     Store.user=g.data.session.user;
     const gt=await sb.rpc('admin_gate');
-    if(gt.data&&gt.data.required&&!gt.data.ok){adminOtp(Store.user.email);return}
+    // fail closed: if the gate cannot be read, the panel does not open (the catch below shows the retry screen)
+    if(gt.error||!gt.data)throw gt.error||new Error('gate');
+    if(gt.data.required&&!gt.data.ok){adminOtp(Store.user.email);return}
     await loadMe();
     if(!Store.isAdmin){
       try{await sb.auth.signOut({scope:'local'})}catch(e){}

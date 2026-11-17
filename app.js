@@ -79,8 +79,13 @@ const fdate=d=>{d=new Date(d);return ar(d.getFullYear()+'/'+(d.getMonth()+1)+'/'
 /* ---------- طبقة البيانات (Supabase) ---------- */
 const Store={ann:[],specialties:[],subjects:[],systems:[],counts:[],qmap:{},idx:{},idxS:{},loadedS:{},freeLoaded:false,user:null,profile:null,premium:false,subs:{},isAdmin:false,ready:false,err:false};
 const NONE={id:'_none',n:'مواد بدون اختصاص',c:'#5A6B77'};
-const subjOf=id=>Store.subjects.find(s=>s.id===id)||{id:id,n:'مادة محذوفة',c:'#5A6B77'};
-const spOfSubj=s=>Store.specialties.some(p=>p.id===s.sp)?s.sp:'_none';
+// Map/Set lookups instead of a linear scan per call (these run inside loops over thousands of cards).
+// The index is rebuilt when the arrays change (new reference or length) and in sortStore()/resetStore().
+let _sjM=null,_sjA=null,_sjN=-1,_spS=null,_spA=null,_spN=-1;
+function reindex(){_sjM=new Map(Store.subjects.map(s=>[s.id,s]));_sjA=Store.subjects;_sjN=Store.subjects.length;_spS=new Set(Store.specialties.map(p=>p.id));_spA=Store.specialties;_spN=Store.specialties.length}
+const idxStale=()=>_sjA!==Store.subjects||_sjN!==Store.subjects.length||_spA!==Store.specialties||_spN!==Store.specialties.length;
+const subjOf=id=>{if(idxStale())reindex();return _sjM.get(id)||{id:id,n:'مادة محذوفة',c:'#5A6B77'}};
+const spOfSubj=s=>{if(idxStale())reindex();return _spS.has(s.sp)?s.sp:'_none'};
 const spById=id=>id==='_none'?NONE:(Store.specialties.find(p=>p.id===id)||NONE);
 const qSp=q=>spOfSubj(subjOf(q.s));
 const subjectsOf=id=>Store.subjects.filter(s=>spOfSubj(s)===id);
@@ -89,7 +94,7 @@ function spList(){const l=Store.specialties.slice();if(Store.subjects.some(s=>sp
 const mw=n=>ar(n)+' '+(n===1?'مادة':n===2?'مادتين':'مواد');
 function sortStore(){
   const byOrd=(a,b)=>(a.ord||0)-(b.ord||0)||String(a.id).localeCompare(String(b.id));
-  Store.specialties.sort(byOrd);Store.subjects.sort(byOrd);Store.systems.sort(byOrd);
+  Store.specialties.sort(byOrd);Store.subjects.sort(byOrd);Store.systems.sort(byOrd);reindex();
   const byT=(a,b)=>(Number(a.t)||0)-(Number(b.t)||0)||String(a.id).localeCompare(String(b.id));
 }
 const newId=p=>p+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
@@ -265,7 +270,10 @@ async function qReveal(c,opt,first,ctx){
     if(!f.error&&f.data&&(f.data.rows||[]).length)r=await sb.rpc('q_answer',args);
     else if(!f.error&&f.data&&f.data.denied){const e=new Error('quota');e.quota=true;throw e}
   }
-  if(r.error){srvErr(r.error);throw r.error}
+  if(r.error){
+    if(/live_locked/.test(String(r.error.message||'')))toast('أجوبة أسئلة الامتحان المباشر مغلقة حتى ينتهي الامتحان.');
+    srvErr(r.error);throw r.error;
+  }
   const d=r.data||{};
   if(typeof d.a!=='number')throw new Error('bad_answer');
   c.a=d.a;c.e=d.e||'';c._ch=d.ch||null;
@@ -302,6 +310,9 @@ function expWarn(){
     $('expok').onclick=closeModal;
   }catch(e){}
 }
+// A random id kept on this device; the server counts how many different devices an account uses (admin panel: accounts on several devices)
+function devId(){try{let k=localStorage.getItem('bc_dev');if(!k||k.length<8){const a=new Uint8Array(12);crypto.getRandomValues(a);k=Array.from(a,x=>x.toString(16).padStart(2,'0')).join('');localStorage.setItem('bc_dev',k)}return k}catch(e){return ''}}
+function devClaim(){const d=devId();if(d.length>=8){try{sb.rpc('claim_device',{p_dev:d}).then(()=>{},()=>{})}catch(e){}}}
 function errMsg(e){
   const c=e&&(e.code||'');const m=(e&&e.message)||'';
   if(c==='42501'||/row-level security|permission denied/i.test(m))return 'ما عندك صلاحية لهذا الإجراء.';
@@ -388,7 +399,7 @@ async function initS(uid){
   if(B)uAdopt(key,S);
 }
 let _lsWarned=false,_lsT=null;
-function save(){S.pu=Date.now();_stA=null;uSave(SKEY,S);markP();pushSyncSoon()}
+function save(){S.pu=Date.now();_stA=null;_syA=null;uSave(SKEY,S);markP();pushSyncSoon()}
 // تعذر الحفظ على الجهاز (المساحة ممتلئة): نرفع التقدم إلى الحساب خلال ثوانٍ بدل الانتظار، وننبه الطالب مرة واحدة
 function lsFull(){
   if(PU&&!_lsT)_lsT=setTimeout(()=>{_lsT=null;PD=true;pushProgress()},15000);
@@ -407,7 +418,7 @@ async function guard(force){
 }
 document.addEventListener('visibilitychange',()=>{if(document.hidden){lbFlush();ptFlush()}else guard()});
 if(window.addEventListener)window.addEventListener('pagehide',()=>{lbFlush()});
-function resetStore(){Object.keys(AIC).forEach(k=>{delete AIC[k]});Store.user=null;Store.profile=null;Store.ready=false;Store.err=false;Store.premium=false;Store.subs={};Store.isAdmin=false;Store.specialties=[];Store.subjects=[];Store.systems=[];Store.counts=[];Store.qmap={};Store.idx={};Store.idxS={};Store.loadedS={};Store.freeLoaded=false}
+function resetStore(){Object.keys(AIC).forEach(k=>{delete AIC[k]});Store.user=null;Store.profile=null;Store.ready=false;Store.err=false;Store.premium=false;Store.subs={};Store.isAdmin=false;Store.specialties=[];Store.subjects=[];Store.systems=[];reindex();Store.counts=[];Store.qmap={};Store.idx={};Store.idxS={};Store.loadedS={};Store.freeLoaded=false}
 const accountGone=e=>!!e&&(e.code==='PGRST116'||e.status===401||e.status===403||e.status===404||/does not exist|sub claim|invalid jwt|user not found/i.test(String(e.message||'')));
 async function goneLogout(){
   const uid=Store.user&&Store.user.id;
@@ -489,6 +500,7 @@ async function doLogin(username,password,code){
   }
   const cs=await sb.rpc('claim_session');
   if(cs.error)return out('تعذر بدء الجلسة. جرب مرة ثانية.');
+  devClaim();
   if(code){
     const x=await sb.rpc('redeem_code',{p_code:code});
     if(x.error){
@@ -547,6 +559,7 @@ async function startApp(){
     try{const gu=await sb.auth.getUser();if(gu.error&&accountGone(gu.error)){await goneLogout();return}}catch(e){}
     const ok=await sb.rpc('session_ok');
     if(ok.data===false){await kick();return}
+    devClaim();
     await loadMe();
     if(Store.profile.blocked){stopGuard();await cacheDropOwner(Store.user.id);blockedScreen();return}
     await Promise.all([initS(Store.user.id),initN(Store.user.id)]);await adoptGuest();initP(Store.user.id);askPersist();
@@ -626,6 +639,21 @@ function stAgg(){
   Object.keys(S.cards).forEach(id=>{const e=S.cards[id];if(!e||!e.s||goneQ(id,e))return;const o=ent(e.ex,e.s,qSp(e));o.ans++;if(e.box>=3)o.mastered++;if(e.due>now)o.pending++});
   _stA=Array.from(T.values());_stT=now;return _stA;
 }
+// Per-system aggregate of the student's cards, built once (cached 1.5 s, cleared by save()) instead of one pass over all cards per row.
+let _syA=null,_syT=0;
+function syAgg(){
+  const now=Date.now();
+  if(_syA&&now-_syT<1500)return _syA;
+  const ok=new Set(Store.systems.map(z=>z.sj+'|'+z.id)),M=new Map();
+  Object.keys(S.cards).forEach(id=>{
+    const e=S.cards[id];if(!e||!e.s||goneQ(id,e))return;
+    const k=e.s+'|'+(e.sy&&ok.has(e.s+'|'+e.sy)?e.sy:'_none')+'|'+e.ex;
+    let o=M.get(k);if(!o){o={m:0,p:0};M.set(k,o)}
+    if(e.box>=3)o.m++;
+    if(e.due>now)o.p++;
+  });
+  _syA=M;_syT=now;return M;
+}
 function stats(sc){
   if(sc.sy===undefined||sc.sy===null){
     let total=0,open=0,mastered=0,pending=0,ans=0;
@@ -640,7 +668,15 @@ function stats(sc){
   let total=0,open=0;
   Store.counts.forEach(g=>{if(!grpIn(g,sc))return;total+=g.n;if(g.free||Store.subs[qSp(g)])open+=g.n});
   const now=Date.now();let mastered=0,pending=0;
-  Object.keys(S.cards).forEach(id=>{const e=S.cards[id];if(!e.s||!grpIn(e,sc)||goneQ(id,e))return;if(e.box>=3)mastered++;if(e.due>now)pending++});
+  if(sc.s&&!sc.sp){
+    syAgg().forEach((o,k)=>{
+      const p=k.split('|');
+      if(p[0]!==sc.s||p[1]!==sc.sy||(sc.ex&&sc.ex!=='all'&&p[2]!==sc.ex))return;
+      mastered+=o.m;pending+=o.p;
+    });
+  }else{
+    Object.keys(S.cards).forEach(id=>{const e=S.cards[id];if(!e.s||!grpIn(e,sc)||goneQ(id,e))return;if(e.box>=3)mastered++;if(e.due>now)pending++});
+  }
   return {total:total,open:open,locked:total-open,mastered:mastered,due:Math.max(0,open-pending)};
 }
 const newIn=sc=>{const st=stats(sc);let ans=st.ans;if(ans===undefined){ans=0;Object.keys(S.cards).forEach(id=>{const e=S.cards[id];if(e.s&&grpIn(e,sc)&&!goneQ(id,e))ans++})}return Math.max(0,st.open-ans)};
@@ -2013,7 +2049,14 @@ async function liveSubmit(){
   L.sending=true;if(modal.innerHTML.trim())closeModal();
   loadingScreen('جارٍ تسليم الامتحان…');
   const ans=L.qs.map((q,k)=>L.ans[k]==null?-1:L.ans[k]);
-  let r;try{r=await rpc('live_submit',{p_id:L.i.id,p_player:pkey(),p_answers:ans})}catch(e){r={error:{}}}
+  // a dropped connection must not throw the exam away: retry the submit a few times (the server refuses a second submit, so it is safe)
+  let r;
+  for(let t=0;t<4;t++){
+    try{r=await rpc('live_submit',{p_id:L.i.id,p_player:pkey(),p_answers:ans})}catch(e){r={error:{message:'Failed to fetch'}}}
+    const em=String((r.error&&r.error.message)||'');
+    if(!r.error||(r.error.code&&!/^(08|53|57)/.test(String(r.error.code)))||!/fetch|network|load failed|abort|timeout|502|503|504/i.test(em))break;
+    await new Promise(z=>setTimeout(z,1500*(t+1)));
+  }
   if(r.error||!r.data){L.sending=false;toast(msgOf(r.error,{already_done:'سُلّم هذا الامتحان مسبقاً.',not_started:'لم يبدأ امتحانك.'}));await liveLoad(L.sp,true);renderLive(L.sp);return}
   const d=r.data;lsSet('bc_lv_'+L.i.id,'[]');lsSet('bc_lvans_'+L.i.id,JSON.stringify(ans));
   if(d.pending){await liveLoad(L.sp,true);liveWait(L,d);return}
