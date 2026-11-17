@@ -451,7 +451,8 @@ const TERMS=`<ul class="terms">
 <li>يُمنع مشاركة الحساب أو كود التفعيل، ويُمنع نسخ الأسئلة أو تصويرها أو نشرها.</li>
 <li>مخالفة هذه الشروط تؤدي إلى إيقاف الحساب بدون استرجاع المبلغ.</li></ul>`;
 function showTerms(){showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>شروط الاستخدام</h2>${TERMS}<button class="btn block" id="ok">حسناً</button>`);$('cl').onclick=closeModal;$('ok').onclick=closeModal}
-const uemail=u=>String(u).trim().toLowerCase().replace(/\s+/g,'')+'@boardcard.example';
+// a student types the username; an account that signs in with a real e-mail (the admin) can type the full e-mail in the same box
+const uemail=u=>{const t=String(u).trim().toLowerCase().replace(/\s+/g,'');return /^[^@]+@[^@]+\.[^@]+$/.test(t)?t:t+'@boardcard.example'};
 function subscribeModal(notice){
   showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button>
     ${logoPlate(120)}
