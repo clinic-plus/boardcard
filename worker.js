@@ -204,6 +204,63 @@ async function img(req, env, url) {
 }
 
 
+// ---- AI explanations cache (D4) ----
+// One shared explanation per question is kept in R2 (USERDATA bucket, prefix ai/). A student who may open the question
+// (checked by the database function q_access, as that student) gets the stored text with no AI call and no daily-limit use.
+// A miss calls the ai-explain Edge Function with the student's own token and stores the answer.
+// The admin deletes the stored text (DELETE /api/ai?id=...) when a question is edited, so a stale explanation is never served.
+const QID_RE = /^[A-Za-z0-9_-]{1,100}$/;
+async function aiExplain(req, env, url) {
+  if (req.method === 'DELETE') {
+    if (!(await isAdmin(req, env))) return json({ error: 'forbidden' }, 403);
+    const id = url.searchParams.get('id') || '';
+    if (!QID_RE.test(id)) return json({ error: 'bad_id' }, 400);
+    await env.USERDATA.delete('ai/' + id + '.json');
+    return json({ ok: true });
+  }
+  if (req.method !== 'POST') return json({ error: 'method' }, 405);
+  const me = await whoami(req, env);
+  if (!me) return json({ error: 'unauthorized' }, 401);
+  if (await limited(env, me.id)) return json({ error: 'busy' }, 429);
+  let body;
+  try { body = await req.json(); } catch (e) { return json({ error: 'bad_json' }, 400); }
+  const qid = String((body && body.question_id) || '');
+  if (!QID_RE.test(qid)) return json({ error: 'bad_request' }, 400);
+  // may this student open this question? (subscriber + already answered, or admin)
+  let acc = null;
+  try {
+    const r = await fetch(SB + '/rest/v1/rpc/q_access', { method: 'POST', headers: rpcH(me.token), body: JSON.stringify({ p_id: qid }) });
+    if (r.status === 401) return json({ error: 'unauthorized' }, 401);
+    if (r.ok) acc = await r.json();
+  } catch (e) {}
+  if (acc === 'no_sub') return json({ error: 'subscribers_only' }, 403);
+  if (acc === 'not_seen') return json({ error: 'answer_first' }, 403);
+  if (acc !== 'ok' && acc !== 'admin') return json({ error: 'not_found' }, 404);
+  const key = 'ai/' + qid + '.json';
+  try {
+    const o = await env.USERDATA.get(key);
+    if (o) {
+      const j = await o.json();
+      if (j && typeof j.t === 'string' && j.t) return json({ text: j.t, cached: true, alt: false });
+    }
+  } catch (e) {}
+  let r;
+  try {
+    r = await fetch(SB + '/functions/v1/ai-explain', {
+      method: 'POST',
+      headers: { apikey: KEY, Authorization: 'Bearer ' + me.token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question_id: qid })
+    });
+  } catch (e) { return json({ error: 'ai_failed' }, 502); }
+  let out = null;
+  try { out = await r.json(); } catch (e) {}
+  if (!out) return json({ error: 'ai_failed' }, 502);
+  if (r.ok && out.text && !out.alt) {
+    try { await env.USERDATA.put(key, JSON.stringify({ t: out.text, at: Date.now() }), { httpMetadata: { contentType: 'application/json' } }); } catch (e) {}
+  }
+  return json(out, r.status);
+}
+
 async function data(req, env, url) {
   const m = /^\/api\/data\/(notes|pq|progress)$/.exec(url.pathname);
   if (m) {
@@ -265,7 +322,7 @@ async function adminR2(req, env, url) {
   if (url.pathname === '/api/admin/list') {
     const l = await bucket.list({ limit: 1000, cursor: url.searchParams.get('cursor') || undefined });
     return json({
-      objects: l.objects.map(o => ({ key: o.key, size: o.size, at: o.uploaded ? new Date(o.uploaded).getTime() : 0 })),
+      objects: l.objects.filter(o => b !== 'user' || o.key.startsWith('users/')).map(o => ({ key: o.key, size: o.size, at: o.uploaded ? new Date(o.uploaded).getTime() : 0 })),
       cursor: l.truncated ? l.cursor : null
     });
   }
@@ -331,9 +388,12 @@ export default {
       const onAdmin = url.hostname.toLowerCase() === AH;
       if (onAdmin && url.pathname === '/') return env.ASSETS.fetch(new Request(new URL('/admin', url), req));
       if (!onAdmin && (url.pathname === '/admin' || url.pathname === '/admin.html')) return Response.redirect('https://' + AH + '/', 302);
+      // The student app must never run on the admin host (an XSS bug there would reach the admin login token).
+      if (onAdmin && (url.pathname === '/index.html' || url.pathname === '/index')) return Response.redirect('https://' + AH.replace(/^admin\./, '') + '/', 302);
     }
     try {
       if (url.pathname === '/api/img') return await img(req, env, url);
+      if (url.pathname === '/api/ai') return await aiExplain(req, env, url);
       if (url.pathname === '/api/data' || url.pathname.startsWith('/api/data/')) return await data(req, env, url);
       if (url.pathname === '/api/admin/metrics') return await metrics(req, env);
       if (url.pathname === '/api/admin/list' || url.pathname === '/api/admin/get') return await adminR2(req, env, url);
