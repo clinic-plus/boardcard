@@ -1,1845 +1,226 @@
-const SB_URL='https://qiejgpvawhxzqmxdjmbd.supabase.co';
-const SB_KEY='sb_publishable_rc10-toTkzah_8IN-JA0uQ_RrA2TFiv';
-if(!window.supabase){document.getElementById('app').innerHTML='<div class="splash"><p class="err">تعذر تحميل مكتبة الاتصال. تحقق من الإنترنت.</p><button class="btn" data-reload="1">إعادة المحاولة</button></div>';throw new Error('supabase-js not loaded')}
-const sb=window.supabase.createClient(SB_URL,SB_KEY,{auth:{storageKey:'sb-boardcard-admin'}});
-const ADMIN_APP=true;
-const LET=['A','B','C','D','E','F'];
-const IMG_BASE='https://img.boardcard.net/',IMG_API='/api/img',IMG_MAXSIDE=1200,IMG_MAXBYTES=400*1024;
-function shrinkImage(file){return new Promise((res,rej)=>{
-  if(!/^image\//.test(file.type)){rej(new Error('اختر ملف صورة.'));return}
-  const url=URL.createObjectURL(file),im=new Image();
-  im.onload=async()=>{
-    URL.revokeObjectURL(url);
-    const k=Math.min(1,IMG_MAXSIDE/Math.max(im.naturalWidth,im.naturalHeight)),w=Math.max(1,Math.round(im.naturalWidth*k)),h=Math.max(1,Math.round(im.naturalHeight*k));
-    const c=document.createElement('canvas');c.width=w;c.height=h;
-    const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,w,h);x.drawImage(im,0,0,w,h);
-    const enc=(t,qv)=>new Promise(r=>c.toBlob(r,t,qv));
-    try{
-      let b=null;
-      for(const qv of [.82,.7,.6,.5,.4]){
-        b=await enc('image/webp',qv);
-        if(!b||b.type!=='image/webp')b=await enc('image/jpeg',qv);
-        if(b&&b.size<=IMG_MAXBYTES)break;
-      }
-      if(!b||b.size>IMG_MAXBYTES){rej(new Error('الصورة كبيرة جداً بعد الضغط. قصّها أو صغّرها.'));return}
-      res(b);
-    }catch(e){rej(new Error('تعذر معالجة الصورة'))}
-  };
-  im.onerror=()=>{URL.revokeObjectURL(url);rej(new Error('ملف الصورة غير صالح'))};
-  im.src=url;
-})}
-async function imgCall(method,path,body,type){
-  const s=(await sb.auth.getSession()).data.session;
-  if(!s)throw new Error('انتهت الجلسة، سجّل الدخول من جديد.');
-  const r=await fetch(path,{method:method,headers:Object.assign({Authorization:'Bearer '+s.access_token},type?{'Content-Type':type}:{}),body:body});
-  let j=null;try{j=await r.json()}catch(e){}
-  if(!r.ok||!j){
-    if(r.status===403||r.status===401)throw new Error('ما عندك صلاحية لرفع الصور.');
-    if(r.status===413)throw new Error('الصورة كبيرة جداً.');
-    throw new Error('تعذر رفع الصورة. تأكد من تحديث الموقع ثم جرب مرة ثانية.');
-  }
-  return j;
-}
-const imgKind=u=>{
-  if(u.length>12&&u[0]===0x52&&u[1]===0x49&&u[2]===0x46&&u[3]===0x46&&u[8]===0x57&&u[9]===0x45&&u[10]===0x42&&u[11]===0x50)return 'webp';
-  if(u.length>3&&u[0]===0xff&&u[1]===0xd8&&u[2]===0xff)return 'jpg';
-  if(u.length>8&&u[0]===0x89&&u[1]===0x50&&u[2]===0x4e&&u[3]===0x47)return 'png';
-  return null;
-};
-async function readZip(buf){
-  const dv=new DataView(buf),u8=new Uint8Array(buf);
-  let e=-1;
-  for(let i=buf.byteLength-22;i>=Math.max(0,buf.byteLength-65557);i--){if(dv.getUint32(i,true)===0x06054b50){e=i;break}}
-  if(e<0)throw new Error('ملف ZIP غير صالح.');
-  const n=dv.getUint16(e+10,true);let p=dv.getUint32(e+16,true);
-  const out=[],td=new TextDecoder('utf-8');
-  for(let k=0;k<n;k++){
-    if(p+46>buf.byteLength||dv.getUint32(p,true)!==0x02014b50)throw new Error('ملف ZIP غير صالح.');
-    const method=dv.getUint16(p+10,true),csz=dv.getUint32(p+20,true),nl=dv.getUint16(p+28,true),xl=dv.getUint16(p+30,true),cl=dv.getUint16(p+32,true),lo=dv.getUint32(p+42,true);
-    const name=td.decode(u8.subarray(p+46,p+46+nl));
-    p+=46+nl+xl+cl;
-    if(name.endsWith('/'))continue;
-    const ds=lo+30+dv.getUint16(lo+26,true)+dv.getUint16(lo+28,true);
-    let data=u8.subarray(ds,ds+csz);
-    if(method===8){
-      const s=new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-      data=new Uint8Array(await new Response(s).arrayBuffer());
-    }else if(method!==0)continue;
-    out.push({name:name,data:data});
-  }
-  return out;
-}
-async function prepImage(rec){
-  const k=imgKind(rec.data);
-  if(!k)throw new Error('صيغة الصورة غير مدعومة: '+rec.name);
-  if((k==='webp'||k==='jpg')&&rec.data.length<=IMG_MAXBYTES)return new Blob([rec.data],{type:k==='webp'?'image/webp':'image/jpeg'});
-  return shrinkImage(new File([rec.data],rec.name,{type:k==='png'?'image/png':(k==='webp'?'image/webp':'image/jpeg')}));
-}
-const uploadImg=async blob=>(await imgCall('POST',IMG_API,blob,blob.type)).path;
-const deleteImgFile=p=>{if(p)imgCall('DELETE',IMG_API+'?path='+encodeURIComponent(p)).catch(()=>{})};
-const COLORS=['#1F5FBF','#3B82C4','#5B6FD6','#1E8FB0','#4F5FA8','#2D6A9F','#0E4A8A','#7A98D8'];
-const INT=[0,1,3,7,21].map(d=>d*864e5);
-const ar=n=>esc(String(n).replace(/\d/g,d=>'0123456789'[d]));
-const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const dirOf=t=>{const m=String(t==null?'':t).match(/[A-Za-z\u0600-\u06FF]/);return m&&/[\u0600-\u06FF]/.test(m[0])?'rtl':'ltr'};
-const EXL={Competitive:'تنافسي',Board:'بورد'};const exL=v=>EXL[v]||v;
-const fmt=s=>esc(s).replace(/\n/g,'<br>');
-const safeC=c=>/^#[0-9a-fA-F]{6}$/.test(c)?c:'#5A6B77';
-const $=id=>document.getElementById(id);
-const brandHtml=()=>`<span class="brandrow"><img class="bmark" src="logo-mark.png" alt="" data-fb="s"><bdi>Boardcard</bdi></span>`;
-const logoPlate=w=>`<div class="logoplate"><img src="logo.png" alt="Boardcard - بوردكارد" style="width:${w}px;max-width:100%;height:auto" data-fb="p"></div>`;
-
-const fdate=d=>{d=new Date(d);return ar(d.getFullYear()+'/'+(d.getMonth()+1)+'/'+d.getDate())};
-
-/* ---------- طبقة البيانات (Supabase) ---------- */
-const Store={specialties:[],subjects:[],systems:[],counts:[],qmap:{},loadedS:{},freeLoaded:false,user:null,profile:null,premium:false,subs:{},isAdmin:false,ready:false,err:false};
-const NONE={id:'_none',n:'مواد بدون اختصاص',c:'#5A6B77'};
-// Map/Set lookups instead of a linear scan per call; rebuilt when the arrays change and in sortStore()
-let _sjM=null,_sjA=null,_sjN=-1,_spS=null,_spA=null,_spN=-1;
-function reindex(){_sjM=new Map(Store.subjects.map(s=>[s.id,s]));_sjA=Store.subjects;_sjN=Store.subjects.length;_spS=new Set(Store.specialties.map(p=>p.id));_spA=Store.specialties;_spN=Store.specialties.length}
-const idxStale=()=>_sjA!==Store.subjects||_sjN!==Store.subjects.length||_spA!==Store.specialties||_spN!==Store.specialties.length;
-const subjOf=id=>{if(idxStale())reindex();return _sjM.get(id)||{id:id,n:'مادة محذوفة',c:'#5A6B77'}};
-const spOfSubj=s=>{if(idxStale())reindex();return _spS.has(s.sp)?s.sp:'_none'};
-const spById=id=>id==='_none'?NONE:(Store.specialties.find(p=>p.id===id)||NONE);
-const qSp=q=>spOfSubj(subjOf(q.s));
-const subjectsOf=id=>Store.subjects.filter(s=>spOfSubj(s)===id);
-const systemsOf=id=>Store.systems.filter(x=>x.sj===id);
-function spList(){const l=Store.specialties.slice();if(Store.subjects.some(s=>spOfSubj(s)==='_none'))l.push(NONE);return l}
-const mw=n=>ar(n)+' '+(n===1?'مادة':n===2?'مادتين':'مواد');
-function sortStore(){
-  const byOrd=(a,b)=>(a.ord||0)-(b.ord||0)||String(a.id).localeCompare(String(b.id));
-  Store.specialties.sort(byOrd);Store.subjects.sort(byOrd);Store.systems.sort(byOrd);reindex();
-  const byT=(a,b)=>(Number(a.t)||0)-(Number(b.t)||0)||String(a.id).localeCompare(String(b.id));
-}
-const newId=p=>p+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
-async function fetchAll(mk){
-  const out=[];
-  for(let from=0;;from+=1000){
-    const r=await mk().range(from,from+999);
-    if(r.error)throw r.error;
-    out.push.apply(out,r.data);
-    if(r.data.length<1000)break;
-  }
-  return out;
-}
-async function loadCounts(){
-  const r=await sb.rpc('question_counts');
-  if(r.error)throw r.error;
-  Store.counts=r.data.map(g=>({s:g.s,sy:g.sy,ex:g.ex,free:g.free,n:Number(g.n)}));
-}
-async function loadAll(){
-  const t=await Promise.all([
-    fetchAll(()=>sb.from('specialties').select('*').order('id')),
-    fetchAll(()=>sb.from('subjects').select('*').order('id')),
-    fetchAll(()=>sb.from('systems').select('*').order('id')),
-    loadCounts()]);
-  Store.specialties=t[0];Store.subjects=t[1];Store.systems=t[2];
-  Store.qmap={};Store.loadedS={};Store.freeLoaded=false;
-  sortStore();
-}
-const cntS=id=>Store.counts.filter(g=>g.s===id).reduce((t,g)=>t+g.n,0);
-const cntSy=id=>Store.counts.filter(g=>g.sy===id).reduce((t,g)=>t+g.n,0);
-const cntTotal=()=>Store.counts.reduce((t,g)=>t+g.n,0);
-async function loadMe(){
-  const uid=Store.user.id;
-  const r=await Promise.all([sb.from('profiles').select('*').eq('id',uid).single(),sb.from('subscriptions').select('specialty_id,expires_at').eq('user_id',uid)]);
-  if(r[0].error)throw r[0].error;
-  Store.profile=r[0].data;
-  Store.isAdmin=Store.profile.role==='admin'&&!Store.profile.blocked;
-  Store.subs={};
-  (r[1].data||[]).forEach(x=>{if(new Date(x.expires_at)>new Date())Store.subs[x.specialty_id]=x.expires_at});
-  Store.premium=Object.keys(Store.subs).length>0;
-}
-async function putMany(col,rows){
-  const r=await sb.from(col).upsert(rows);
-  if(r.error)throw r.error;
-  if(col==='questions')await loadCounts();
-  else rows.forEach(x=>{const arr=Store[col],i=arr.findIndex(y=>y.id===x.id);if(i>=0)arr[i]=x;else arr.push(x)});
-  sortStore();refresh();
-}
-const put=(col,id,data)=>putMany(col,[Object.assign({id:id},data)]);
-async function del(col,id){
-  const r=await sb.from(col).delete().eq('id',id);
-  if(r.error)throw r.error;
-  if(col==='questions')await loadCounts();else Store[col]=Store[col].filter(x=>x.id!==id);
-  refresh();
-}
-function errMsg(e){
-  const c=e&&(e.code||'');const m=(e&&e.message)||'';
-  if(c==='42501'||/row-level security|permission denied/i.test(m))return 'ما عندك صلاحية لهذا الإجراء.';
-  if(/invalid_code/.test(m))return 'الكود غير صحيح أو مستخدم من قبل.';
-  if(/session_replaced/.test(m))return 'أُغلقت هذه الجلسة لأن الحساب فُتح من جهاز آخر.';
-  if(/blocked/.test(m))return 'هذا الحساب موقوف.';
-  return 'تعذر تنفيذ العملية. جرب مرة ثانية.';
-}
-function refresh(){if(view==='admin')admin()}
-function toast(m){const t=$('toast');t.innerHTML=`<div class="toast" role="status">${esc(m)}</div>`;clearTimeout(toast.t);toast.t=setTimeout(()=>{t.innerHTML=''},2600)}
-
-/* ---------- واجهة الطالب ---------- */
-let view='boot';
-const app=$('app'),modal=$('modal');
-/* عدّاد الأرقام وتتابع ظهور العناصر */
-(function(){
-  const nm=()=>window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
-  function run(el,to,commas,suf){
-    const f=v=>(commas?v.toLocaleString('en'):String(v))+suf;
-    if(nm()||!(to>0))return;
-    el.textContent=f(0);const t0=performance.now();
-    const step=t=>{if(!el.isConnected)return;const p=Math.min(1,(t-t0)/1100),e=1-Math.pow(1-p,3);el.textContent=f(Math.round(to*e));if(p<1)requestAnimationFrame(step);else el.textContent=f(to)};
-    requestAnimationFrame(step);
-  }
-  function pass(){
-    const a=document.getElementById('app');if(!a)return;
-    a.querySelectorAll('.kpi,.item,.row,.panel,.sec,.sum').forEach(el=>{
-      if(el.dataset.an)return;el.dataset.an='1';
-      const i=Array.prototype.indexOf.call(el.parentNode.children,el);
-      el.style.setProperty('--i',Math.min(Math.max(i,0),10));
-    });
-    a.querySelectorAll('.kpi b,.sum .big').forEach(el=>{
-      if(el.dataset.cd)return;el.dataset.cd='1';
-      const m=el.textContent.trim().match(/^(\d[\d,]*)(\D.*)?$/);if(!m)return;
-      const i=+(el.closest('.kpi')&&el.closest('.kpi').style.getPropertyValue('--i'))||0;
-      setTimeout(()=>run(el,+m[1].replace(/,/g,''),m[1].includes(','),m[2]||''),i*60+150);
-    });
-  }
-  new MutationObserver(pass).observe(document.getElementById('app'),{childList:true,subtree:true});
-})();
-
-let _sy=0,_locked=false;
-function lockScroll(){
-  if(_locked)return;_locked=true;
-  _sy=window.scrollY||(document.documentElement&&document.documentElement.scrollTop)||0;
-  const b=document.body.style;b.position='fixed';b.top=(-_sy)+'px';b.left='0';b.right='0';b.width='100%';
-}
-function unlockScroll(){
-  if(!_locked)return;_locked=false;
-  const b=document.body.style;b.position='';b.top='';b.left='';b.right='';b.width='';
-  window.scrollTo(0,_sy);
-}
-function showModal(html){modal.innerHTML=`<div class="ov" id="ov"><div class="sheet" role="dialog" aria-modal="true">${html}</div></div>`;lockScroll();$('ov').onclick=e=>{if(e.target.id==='ov')closeModal()}}
-function closeModal(){modal.innerHTML='';unlockScroll()}
-function askConfirm(title,msg,ok){
-  return new Promise(res=>{
-    showModal(`<h2>${esc(title)}</h2><p>${esc(msg)}</p><div class="r2"><button class="btn line" id="cn">إلغاء</button><button class="btn bad" id="cy">${esc(ok)}</button></div>`);
-    $('cn').onclick=()=>{closeModal();res(false)};
-    $('cy').onclick=()=>{closeModal();res(true)};
-  });
-}
-
-/* ---------- الرئيسية ---------- */
-function boot(){view='home';app.innerHTML=`<div class="splash">${logoPlate(170)}<p class="hint">جارٍ التحميل…</p></div>`}
-/* ---------- لوحة التحكم ---------- */
-let A={tab:'specs',rs:'open',fsp:'all',fs:'all',fq:'',fu:'',fx:'all',last:{ex:'Competitive',y:new Date().getFullYear(),free:false}};
-function subjOptions(sel,withAll){
-  let h=withAll?`<option value="all">كل المواد</option>`:'';
-  spList().forEach(p=>{
-    const ss=subjectsOf(p.id);if(!ss.length)return;
-    h+=`<optgroup label="${esc(p.n)}">`+ss.map(x=>`<option value="${esc(x.id)}" ${x.id===sel?'selected':''}>${esc(x.n)}</option>`).join('')+`</optgroup>`;
-  });
-  return h;
-}
-function admin(){
-  view='admin';
-  if(!Store.isAdmin){adminLogin();return}
-  const _ob=app.querySelector('.tabs'),_sl=_ob?_ob.scrollLeft:null;   // نحفظ مكان تمرير الشريط قبل إعادة الرسم
-  const qc=cntS;
-  let body='';
-  if(A.tab==='specs'){
-    body=`<button class="btn block" id="addP">+ اختصاص جديد</button><div style="height:12px"></div>`;
-    body+=Store.specialties.length
-      ?Store.specialties.map(p=>{const ss=subjectsOf(p.id),n=ss.reduce((t,x)=>t+qc(x.id),0);
-        return `<div class="item" style="--sc:${safeC(p.c)}">${covImg(p.img)}<div class="grow"><div class="nm">${esc(p.n)}</div><div class="sub">${mw(ss.length)}، ${ar(n)} سؤال</div></div>
-        <div class="acts2"><button class="ib" data-ep="${esc(p.id)}">تعديل</button><button class="ib del" data-dp="${esc(p.id)}">حذف</button></div></div>`}).join('')
-      :`<div class="empty">لا توجد اختصاصات بعد. أضف اختصاصاً (مثل الباطنية) ثم أضف مواده وأسئلته.</div>`;
-  }else if(A.tab==='subjects'){
-    const list=Store.subjects.filter(x=>A.fsp==='all'||spOfSubj(x)===A.fsp);
-    body=`<button class="btn block" id="addS">+ مادة جديدة</button>
-      <select class="in" id="fsp" aria-label="الاختصاص" style="margin:12px 0"><option value="all">كل الاختصاصات</option>${spList().map(p=>`<option value="${esc(p.id)}" ${A.fsp===p.id?'selected':''}>${esc(p.n)}</option>`).join('')}</select>`;
-    body+=list.length
-      ?list.map(x=>{const p=spById(spOfSubj(x));
-        return `<div class="item" style="--sc:${safeC(x.c)}">${covImg(x.img)}<div class="grow"><div class="nm">${esc(x.n)}</div><div class="sub">${esc(p.n)}${p.id==='_none'?' (عدّل المادة وحدد اختصاصاً)':''}، ${ar(qc(x.id))} سؤال${systemsOf(x.id).length?'، '+ar(systemsOf(x.id).length)+' نظام':''}</div></div>
-        <div class="acts2"><button class="ib" data-es="${esc(x.id)}">تعديل</button><button class="ib" data-ys="${esc(x.id)}">الأنظمة</button><button class="ib del" data-ds="${esc(x.id)}">حذف</button></div></div>`}).join('')
-      :`<div class="empty">${Store.specialties.length?'لا توجد مواد في هذا الاختصاص بعد.':'أضف اختصاصاً أولاً من تبويب الاختصاصات.'}</div>`;
-  }else if(A.tab==='questions'){
-    body=`<div class="item" id="usage" style="--sc:#1A56B0;display:block"><div class="sub">جارٍ حساب استهلاك القاعدة…</div></div>
-      <div class="r2" style="margin-top:12px"><button class="btn" id="addQ">+ سؤال جديد</button><button class="btn line" id="bulk">إضافة جماعية</button></div>
-      <div class="r2" style="margin-top:8px"><button class="btn line" id="bkc">تصدير Excel (CSV)</button><button class="btn line" id="r2st">📊 الاستهلاك</button><button class="btn line" id="r2cl">🧹 تنظيف</button></div>
-      <button class="btn block" id="bkf" style="margin-top:8px">⬇ نسخة احتياطية شاملة (كل شيء)</button>
-      <button class="btn line block" id="cmtb" style="margin-top:8px">💬 التعليقات…</button>
+if(!window.supabase)throw document.getElementById("app").innerHTML='<div class="splash"><p class="err">\u062A\u0639\u0630\u0631 \u062A\u062D\u0645\u064A\u0644 \u0645\u0643\u062A\u0628\u0629 \u0627\u0644\u0627\u062A\u0635\u0627\u0644. \u062A\u062D\u0642\u0642 \u0645\u0646 \u0627\u0644\u0625\u0646\u062A\u0631\u0646\u062A.</p><button class="btn" data-reload="1">\u0625\u0639\u0627\u062F\u0629 \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0629</button></div>',new Error("supabase-js not loaded");const sb=window.supabase.createClient(SB_URL,SB_KEY,{auth:{storageKey:"sb-boardcard-admin"}}),ADMIN_APP=!0,IMG_BASE="https://img.boardcard.net/",IMG_API="/api/img",IMG_MAXSIDE=1200,IMG_MAXBYTES=400*1024;function shrinkImage(t){return new Promise((e,s)=>{if(!/^image\//.test(t.type)){s(new Error("\u0627\u062E\u062A\u0631 \u0645\u0644\u0641 \u0635\u0648\u0631\u0629."));return}const a=URL.createObjectURL(t),n=new Image;n.onload=async()=>{URL.revokeObjectURL(a);const i=Math.min(1,IMG_MAXSIDE/Math.max(n.naturalWidth,n.naturalHeight)),l=Math.max(1,Math.round(n.naturalWidth*i)),o=Math.max(1,Math.round(n.naturalHeight*i)),c=document.createElement("canvas");c.width=l,c.height=o;const p=c.getContext("2d");p.fillStyle="#fff",p.fillRect(0,0,l,o),p.drawImage(n,0,0,l,o);const d=(b,r)=>new Promise(u=>c.toBlob(u,b,r));try{let b=null;for(const r of[.82,.7,.6,.5,.4])if(b=await d("image/webp",r),(!b||b.type!=="image/webp")&&(b=await d("image/jpeg",r)),b&&b.size<=IMG_MAXBYTES)break;if(!b||b.size>IMG_MAXBYTES){s(new Error("\u0627\u0644\u0635\u0648\u0631\u0629 \u0643\u0628\u064A\u0631\u0629 \u062C\u062F\u0627\u064B \u0628\u0639\u062F \u0627\u0644\u0636\u063A\u0637. \u0642\u0635\u0651\u0647\u0627 \u0623\u0648 \u0635\u063A\u0651\u0631\u0647\u0627."));return}e(b)}catch{s(new Error("\u062A\u0639\u0630\u0631 \u0645\u0639\u0627\u0644\u062C\u0629 \u0627\u0644\u0635\u0648\u0631\u0629"))}},n.onerror=()=>{URL.revokeObjectURL(a),s(new Error("\u0645\u0644\u0641 \u0627\u0644\u0635\u0648\u0631\u0629 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D"))},n.src=a})}async function imgCall(t,e,s,a){const n=(await sb.auth.getSession()).data.session;if(!n)throw new Error("\u0627\u0646\u062A\u0647\u062A \u0627\u0644\u062C\u0644\u0633\u0629\u060C \u0633\u062C\u0651\u0644 \u0627\u0644\u062F\u062E\u0648\u0644 \u0645\u0646 \u062C\u062F\u064A\u062F.");const i=await fetch(e,{method:t,headers:Object.assign({Authorization:"Bearer "+n.access_token},a?{"Content-Type":a}:{}),body:s});let l=null;try{l=await i.json()}catch{}if(!i.ok||!l)throw i.status===403||i.status===401?new Error("\u0645\u0627 \u0639\u0646\u062F\u0643 \u0635\u0644\u0627\u062D\u064A\u0629 \u0644\u0631\u0641\u0639 \u0627\u0644\u0635\u0648\u0631."):i.status===413?new Error("\u0627\u0644\u0635\u0648\u0631\u0629 \u0643\u0628\u064A\u0631\u0629 \u062C\u062F\u0627\u064B."):new Error("\u062A\u0639\u0630\u0631 \u0631\u0641\u0639 \u0627\u0644\u0635\u0648\u0631\u0629. \u062A\u0623\u0643\u062F \u0645\u0646 \u062A\u062D\u062F\u064A\u062B \u0627\u0644\u0645\u0648\u0642\u0639 \u062B\u0645 \u062C\u0631\u0628 \u0645\u0631\u0629 \u062B\u0627\u0646\u064A\u0629.");return l}const imgKind=t=>t.length>12&&t[0]===82&&t[1]===73&&t[2]===70&&t[3]===70&&t[8]===87&&t[9]===69&&t[10]===66&&t[11]===80?"webp":t.length>3&&t[0]===255&&t[1]===216&&t[2]===255?"jpg":t.length>8&&t[0]===137&&t[1]===80&&t[2]===78&&t[3]===71?"png":null;async function readZip(t){const e=new DataView(t),s=new Uint8Array(t);let a=-1;for(let c=t.byteLength-22;c>=Math.max(0,t.byteLength-65557);c--)if(e.getUint32(c,!0)===101010256){a=c;break}if(a<0)throw new Error("\u0645\u0644\u0641 ZIP \u063A\u064A\u0631 \u0635\u0627\u0644\u062D.");const n=e.getUint16(a+10,!0);let i=e.getUint32(a+16,!0);const l=[],o=new TextDecoder("utf-8");for(let c=0;c<n;c++){if(i+46>t.byteLength||e.getUint32(i,!0)!==33639248)throw new Error("\u0645\u0644\u0641 ZIP \u063A\u064A\u0631 \u0635\u0627\u0644\u062D.");const p=e.getUint16(i+10,!0),d=e.getUint32(i+20,!0),b=e.getUint16(i+28,!0),r=e.getUint16(i+30,!0),u=e.getUint16(i+32,!0),f=e.getUint32(i+42,!0),m=o.decode(s.subarray(i+46,i+46+b));if(i+=46+b+r+u,m.endsWith("/"))continue;const h=f+30+e.getUint16(f+26,!0)+e.getUint16(f+28,!0);let y=s.subarray(h,h+d);if(p===8){const _=new Blob([y]).stream().pipeThrough(new DecompressionStream("deflate-raw"));y=new Uint8Array(await new Response(_).arrayBuffer())}else if(p!==0)continue;l.push({name:m,data:y})}return l}async function prepImage(t){const e=imgKind(t.data);if(!e)throw new Error("\u0635\u064A\u063A\u0629 \u0627\u0644\u0635\u0648\u0631\u0629 \u063A\u064A\u0631 \u0645\u062F\u0639\u0648\u0645\u0629: "+t.name);return(e==="webp"||e==="jpg")&&t.data.length<=IMG_MAXBYTES?new Blob([t.data],{type:e==="webp"?"image/webp":"image/jpeg"}):shrinkImage(new File([t.data],t.name,{type:e==="png"?"image/png":e==="webp"?"image/webp":"image/jpeg"}))}const uploadImg=async t=>(await imgCall("POST",IMG_API,t,t.type)).path,deleteImgFile=t=>{t&&imgCall("DELETE",IMG_API+"?path="+encodeURIComponent(t)).catch(()=>{})},purgeAi=t=>{t&&imgCall("DELETE","/api/ai?id="+encodeURIComponent(t)).catch(()=>{})},INT=[0,1,3,7,21].map(t=>t*864e5),ar=t=>esc(String(t).replace(/\d/g,e=>"0123456789"[e])),esc=t=>String(t??"").replace(/[&<>"']/g,e=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[e]),$=t=>document.getElementById(t),Store={specialties:[],subjects:[],systems:[],counts:[],qmap:{},loadedS:{},freeLoaded:!1,user:null,profile:null,premium:!1,subs:{},isAdmin:!1,ready:!1,err:!1};async function loadAll(){const t=await Promise.all([fetchAll(()=>sb.from("specialties").select("*").order("id")),fetchAll(()=>sb.from("subjects").select("*").order("id")),fetchAll(()=>sb.from("systems").select("*").order("id")),loadCounts()]);Store.specialties=t[0],Store.subjects=t[1],Store.systems=t[2],Store.qmap={},Store.loadedS={},Store.freeLoaded=!1,sortStore()}async function loadMe(){const t=Store.user.id,e=await Promise.all([sb.from("profiles").select("*").eq("id",t).single(),sb.from("subscriptions").select("specialty_id,expires_at").eq("user_id",t)]);if(e[0].error)throw e[0].error;Store.profile=e[0].data,Store.isAdmin=Store.profile.role==="admin"&&!Store.profile.blocked,Store.subs={},(e[1].data||[]).forEach(s=>{new Date(s.expires_at)>new Date&&(Store.subs[s.specialty_id]=s.expires_at)}),Store.premium=Object.keys(Store.subs).length>0}async function putMany(t,e){const s=await sb.from(t).upsert(e);if(s.error)throw s.error;t==="questions"?await loadCounts():e.forEach(a=>{const n=Store[t],i=n.findIndex(l=>l.id===a.id);i>=0?n[i]=a:n.push(a)}),sortStore(),refresh()}const put=(t,e,s)=>putMany(t,[Object.assign({id:e},s)]);async function del(t,e){const s=await sb.from(t).delete().eq("id",e);if(s.error)throw s.error;t==="questions"?await loadCounts():Store[t]=Store[t].filter(a=>a.id!==e),refresh()}function refresh(){view==="admin"&&admin()}function toast(t){const e=$("toast");e.innerHTML=`<div class="toast" role="status">${esc(t)}</div>`,clearTimeout(toast.t),toast.t=setTimeout(()=>{e.innerHTML=""},2600)}let view="boot";const app=$("app"),modal=$("modal");(function(){const t=()=>window.matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matches;function e(a,n,i,l){const o=d=>(i?d.toLocaleString("en"):String(d))+l;if(t()||!(n>0))return;a.textContent=o(0);const c=performance.now(),p=d=>{if(!a.isConnected)return;const b=Math.min(1,(d-c)/1100),r=1-Math.pow(1-b,3);a.textContent=o(Math.round(n*r)),b<1?requestAnimationFrame(p):a.textContent=o(n)};requestAnimationFrame(p)}function s(){const a=document.getElementById("app");a&&(a.querySelectorAll(".kpi,.item,.row,.panel,.sec,.sum").forEach(n=>{if(n.dataset.an)return;n.dataset.an="1";const i=Array.prototype.indexOf.call(n.parentNode.children,n);n.style.setProperty("--i",Math.min(Math.max(i,0),10))}),a.querySelectorAll(".kpi b,.sum .big").forEach(n=>{if(n.dataset.cd)return;n.dataset.cd="1";const i=n.textContent.trim().match(/^(\d[\d,]*)(\D.*)?$/);if(!i)return;const l=+(n.closest(".kpi")&&n.closest(".kpi").style.getPropertyValue("--i"))||0;setTimeout(()=>e(n,+i[1].replace(/,/g,""),i[1].includes(","),i[2]||""),l*60+150)}))}new MutationObserver(s).observe(document.getElementById("app"),{childList:!0,subtree:!0})})();function showModal(t){modal.innerHTML=`<div class="ov" id="ov"><div class="sheet" role="dialog" aria-modal="true">${t}</div></div>`,lockScroll(),$("ov").onclick=e=>{e.target.id==="ov"&&closeModal()}}function closeModal(){modal.innerHTML="",unlockScroll()}function askConfirm(t,e,s){return new Promise(a=>{showModal(`<h2>${esc(t)}</h2><p>${esc(e)}</p><div class="r2"><button class="btn line" id="cn">\u0625\u0644\u063A\u0627\u0621</button><button class="btn bad" id="cy">${esc(s)}</button></div>`),$("cn").onclick=()=>{closeModal(),a(!1)},$("cy").onclick=()=>{closeModal(),a(!0)}})}function boot(){view="home",app.innerHTML=`<div class="splash">${logoPlate(170)}<p class="hint">\u062C\u0627\u0631\u064D \u0627\u0644\u062A\u062D\u0645\u064A\u0644\u2026</p></div>`}let A={tab:"specs",rs:"open",fsp:"all",fs:"all",fq:"",fu:"",fx:"all",last:{ex:"Competitive",y:new Date().getFullYear(),free:!1}};function subjOptions(t,e){let s=e?'<option value="all">\u0643\u0644 \u0627\u0644\u0645\u0648\u0627\u062F</option>':"";return spList().forEach(a=>{const n=subjectsOf(a.id);n.length&&(s+=`<optgroup label="${esc(a.n)}">`+n.map(i=>`<option value="${esc(i.id)}" ${i.id===t?"selected":""}>${esc(i.n)}</option>`).join("")+"</optgroup>")}),s}function admin(){if(view="admin",!Store.isAdmin){adminLogin();return}const t=app.querySelector(".tabs"),e=t?t.scrollLeft:null,s=cntS;let a="";if(A.tab==="specs")a='<button class="btn block" id="addP">+ \u0627\u062E\u062A\u0635\u0627\u0635 \u062C\u062F\u064A\u062F</button><div style="height:12px"></div>',a+=Store.specialties.length?Store.specialties.map(n=>{const i=subjectsOf(n.id),l=i.reduce((o,c)=>o+s(c.id),0);return`<div class="item" style="--sc:${safeC(n.c)}">${covImg(n.img)}<div class="grow"><div class="nm">${esc(n.n)}</div><div class="sub">${mw(i.length)}\u060C ${ar(l)} \u0633\u0624\u0627\u0644</div></div>
+        <div class="acts2"><button class="ib" data-ep="${esc(n.id)}">\u062A\u0639\u062F\u064A\u0644</button><button class="ib del" data-dp="${esc(n.id)}">\u062D\u0630\u0641</button></div></div>`}).join(""):'<div class="empty">\u0644\u0627 \u062A\u0648\u062C\u062F \u0627\u062E\u062A\u0635\u0627\u0635\u0627\u062A \u0628\u0639\u062F. \u0623\u0636\u0641 \u0627\u062E\u062A\u0635\u0627\u0635\u0627\u064B (\u0645\u062B\u0644 \u0627\u0644\u0628\u0627\u0637\u0646\u064A\u0629) \u062B\u0645 \u0623\u0636\u0641 \u0645\u0648\u0627\u062F\u0647 \u0648\u0623\u0633\u0626\u0644\u062A\u0647.</div>';else if(A.tab==="subjects"){const n=Store.subjects.filter(i=>A.fsp==="all"||spOfSubj(i)===A.fsp);a=`<button class="btn block" id="addS">+ \u0645\u0627\u062F\u0629 \u062C\u062F\u064A\u062F\u0629</button>
+      <select class="in" id="fsp" aria-label="\u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635" style="margin:12px 0"><option value="all">\u0643\u0644 \u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635\u0627\u062A</option>${spList().map(i=>`<option value="${esc(i.id)}" ${A.fsp===i.id?"selected":""}>${esc(i.n)}</option>`).join("")}</select>`,a+=n.length?n.map(i=>{const l=spById(spOfSubj(i));return`<div class="item" style="--sc:${safeC(i.c)}">${covImg(i.img)}<div class="grow"><div class="nm">${esc(i.n)}</div><div class="sub">${esc(l.n)}${l.id==="_none"?" (\u0639\u062F\u0651\u0644 \u0627\u0644\u0645\u0627\u062F\u0629 \u0648\u062D\u062F\u062F \u0627\u062E\u062A\u0635\u0627\u0635\u0627\u064B)":""}\u060C ${ar(s(i.id))} \u0633\u0624\u0627\u0644${systemsOf(i.id).length?"\u060C "+ar(systemsOf(i.id).length)+" \u0646\u0638\u0627\u0645":""}</div></div>
+        <div class="acts2"><button class="ib" data-es="${esc(i.id)}">\u062A\u0639\u062F\u064A\u0644</button><button class="ib" data-ys="${esc(i.id)}">\u0627\u0644\u0623\u0646\u0638\u0645\u0629</button><button class="ib del" data-ds="${esc(i.id)}">\u062D\u0630\u0641</button></div></div>`}).join(""):`<div class="empty">${Store.specialties.length?"\u0644\u0627 \u062A\u0648\u062C\u062F \u0645\u0648\u0627\u062F \u0641\u064A \u0647\u0630\u0627 \u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635 \u0628\u0639\u062F.":"\u0623\u0636\u0641 \u0627\u062E\u062A\u0635\u0627\u0635\u0627\u064B \u0623\u0648\u0644\u0627\u064B \u0645\u0646 \u062A\u0628\u0648\u064A\u0628 \u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635\u0627\u062A."}</div>`}else if(A.tab==="questions")a=`<div class="item" id="usage" style="--sc:#1A56B0;display:block"><div class="sub">\u062C\u0627\u0631\u064D \u062D\u0633\u0627\u0628 \u0627\u0633\u062A\u0647\u0644\u0627\u0643 \u0627\u0644\u0642\u0627\u0639\u062F\u0629\u2026</div></div>
+      <div class="r2" style="margin-top:12px"><button class="btn" id="addQ">+ \u0633\u0624\u0627\u0644 \u062C\u062F\u064A\u062F</button><button class="btn line" id="bulk">\u0625\u0636\u0627\u0641\u0629 \u062C\u0645\u0627\u0639\u064A\u0629</button></div>
+      <div class="r2" style="margin-top:8px"><button class="btn line" id="bkc">\u062A\u0635\u062F\u064A\u0631 Excel (CSV)</button><button class="btn line" id="r2st">\u{1F4CA} \u0627\u0644\u0627\u0633\u062A\u0647\u0644\u0627\u0643</button><button class="btn line" id="r2cl">\u{1F9F9} \u062A\u0646\u0638\u064A\u0641</button></div>
+      <button class="btn block" id="bkf" style="margin-top:8px">\u2B07 \u0646\u0633\u062E\u0629 \u0627\u062D\u062A\u064A\u0627\u0637\u064A\u0629 \u0634\u0627\u0645\u0644\u0629 (\u0643\u0644 \u0634\u064A\u0621)</button>
+      <button class="btn line block" id="cmtb" style="margin-top:8px">\u{1F4AC} \u0627\u0644\u062A\u0639\u0644\u064A\u0642\u0627\u062A\u2026</button>
+      <button class="btn line block" id="sus" style="margin-top:8px">\u{1F50E} \u0623\u0633\u0626\u0644\u0629 \u0642\u062F \u064A\u0643\u0648\u0646 \u062C\u0648\u0627\u0628\u0647\u0627 \u0627\u0644\u0645\u0639\u062A\u0645\u062F \u062E\u0627\u0637\u0626\u0627\u064B</button>
       <div id="r2box" class="hint" style="margin-top:8px"></div>
       <div id="bkinfo" class="hint" style="margin-top:8px"></div>
       <div class="r2" style="margin:12px 0">
-        <select class="in" id="fs" aria-label="المادة">${subjOptions(A.fs,true)}</select>
-        <input class="in" id="fq" placeholder="بحث في الأسئلة" value="${esc(A.fq)}"></div>
-      <div id="qlist"></div>`;
-  }else if(A.tab==='codes'){
-    body=`<label class="fld"><span>الاختصاص الذي يفتحه الكود</span><select class="in" id="csp">${Store.specialties.map(p=>`<option value="${esc(p.id)}">${esc(p.n)}</option>`).join('')}</select></label>
-      <div class="r2"><label class="fld"><span>العدد</span><input class="in" id="cn" type="number" min="1" max="50" value="10" style="direction:ltr;text-align:center"></label>
-      <label class="fld"><span>المدة بالأيام</span><input class="in" id="cdays" type="number" min="1" max="365" value="30" style="direction:ltr;text-align:center"></label></div>
-      <label class="fld"><span>ملاحظة (اختياري)</span><input class="in" id="cnote" maxlength="60" placeholder="مثلاً: وكيل بغداد"></label>
-      ${priceField('cprice','سعر الكود الواحد بالدينار (للإيراد)')}
+        <select class="in" id="fs" aria-label="\u0627\u0644\u0645\u0627\u062F\u0629">${subjOptions(A.fs,!0)}</select>
+        <input class="in" id="fq" placeholder="\u0628\u062D\u062B \u0641\u064A \u0627\u0644\u0623\u0633\u0626\u0644\u0629" value="${esc(A.fq)}"></div>
+      <div id="qlist"></div>`;else if(A.tab==="codes")a=`<label class="fld"><span>\u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635 \u0627\u0644\u0630\u064A \u064A\u0641\u062A\u062D\u0647 \u0627\u0644\u0643\u0648\u062F</span><select class="in" id="csp">${Store.specialties.map(n=>`<option value="${esc(n.id)}">${esc(n.n)}</option>`).join("")}</select></label>
+      <div class="r2"><label class="fld"><span>\u0627\u0644\u0639\u062F\u062F</span><input class="in" id="cn" type="number" min="1" max="50" value="10" style="direction:ltr;text-align:center"></label>
+      <label class="fld"><span>\u0627\u0644\u0645\u062F\u0629 \u0628\u0627\u0644\u0623\u064A\u0627\u0645</span><input class="in" id="cdays" type="number" min="1" max="365" value="30" style="direction:ltr;text-align:center"></label></div>
+      <label class="fld"><span>\u0645\u0644\u0627\u062D\u0638\u0629 (\u0627\u062E\u062A\u064A\u0627\u0631\u064A)</span><input class="in" id="cnote" maxlength="60" placeholder="\u0645\u062B\u0644\u0627\u064B: \u0648\u0643\u064A\u0644 \u0628\u063A\u062F\u0627\u062F"></label>
+      ${priceField("cprice","\u0633\u0639\u0631 \u0627\u0644\u0643\u0648\u062F \u0627\u0644\u0648\u0627\u062D\u062F \u0628\u0627\u0644\u062F\u064A\u0646\u0627\u0631 (\u0644\u0644\u0625\u064A\u0631\u0627\u062F)")}
       <p class="err" id="er" role="alert"></p>
-      <button class="btn block" id="mk">إنشاء الأكواد</button>
+      <button class="btn block" id="mk">\u0625\u0646\u0634\u0627\u0621 \u0627\u0644\u0623\u0643\u0648\u0627\u062F</button>
       <div id="newcodes"></div>
-      <h3 class="sec">الأكواد السابقة</h3><div id="codelist"><p class="hint">جارٍ التحميل…</p></div>`;
-  }else if(A.tab==='inbox'){
-    const seg=`<div class="seg" role="group" aria-label="القسم" style="margin-top:0"><button data-ib="reports" aria-pressed="${A.ib!=='reqs'}" id="ibr">تبليغات عن أسئلة</button><button data-ib="reqs" aria-pressed="${A.ib==='reqs'}" id="ibq">طلبات المواد</button></div>`;
-    body=seg+(A.ib==='reqs'
-      ?`<div class="seg" role="group" aria-label="الحالة" style="margin-top:0"><button data-qs="new" aria-pressed="${A.qs!=='done'}">جديدة</button><button data-qs="done" aria-pressed="${A.qs==='done'}">منجزة</button></div><div id="rqlist" style="margin-top:12px"><p class="hint">جارٍ التحميل…</p></div>`
-      :`<div class="seg" role="group" aria-label="الحالة" style="margin-top:0"><button data-rs="open" aria-pressed="${A.rs==='open'}">مفتوحة</button><button data-rs="resolved" aria-pressed="${A.rs==='resolved'}">تم حلها</button></div><div id="rplist"><p class="hint">جارٍ التحميل…</p></div>`);
-  }else if(A.tab==='usage'){
-    body=`<div class="uv" id="uvroot"><div class="r2" style="margin-bottom:10px"><button class="btn line" id="uvrf">⟳ تحديث</button></div>
-      <div class="card"><h3>قاعدة البيانات</h3><p class="cap">Supabase: جداول الأسئلة والحسابات وغيرها</p><div id="uvdb"><p class="hint">جارٍ القراءة…</p></div></div>
-      <div class="card"><h3>تخزين Supabase</h3><p class="cap">الأغلفة والتعليقات والملفات القديمة</p><div id="uvst"><p class="hint">جارٍ القراءة…</p></div></div>
-      <div class="card"><h3>تخزين R2</h3><p class="cap">صور الأسئلة وبيانات الطلاب (ملاحظات، أسئلة خاصة، تقدم)</p><div id="uvr2"><p class="hint">جارٍ القراءة…</p></div><div id="cfm"></div></div></div>`;
-  }else if(A.tab==='stats'){
-    body=`<div id="stbox"><p class="hint">جارٍ حساب الأرقام…</p></div>`;
-  }else if(A.tab==='errors'){
-    body=`<p class="hint">أخطاء برمجية حدثت في أجهزة الطلاب. كل نوع خطأ يظهر مرة واحدة مع عدد مراته. إذا ظهر خطأ جديد بعد تحديث، فالتحديث غالباً هو السبب.</p><div class="r2" style="margin-bottom:10px"><button class="btn line" id="erl">⟳ تحديث</button><button class="btn line" id="erc">مسح الكل</button></div><div id="erlist"><p class="hint">جارٍ التحميل…</p></div>`;
-  }else if(A.tab==='dev'){
-    body=`<p class="hint">حسابات سُجّل دخولها من 3 أجهزة مختلفة أو أكثر خلال آخر 7 أيام. الحساب يعمل على جهاز واحد في كل وقت، فهذا العدد يعني أن الدخول تكرر من أجهزة كثيرة، وغالباً هذا يدل على مشاركة الحساب. تقدر تحظر الحساب، أو تصفّر العدّاد بعد أن تنبّه الطالب.</p><div class="r2" style="margin-bottom:10px"><button class="btn line" id="dvl">⟳ تحديث</button></div><div id="dvlist"><p class="hint">جارٍ التحميل…</p></div>`;
-  }else if(A.tab==='audit'){
-    body=`<p class="hint">آخر التغييرات على الاشتراكات وأكواد التفعيل: من غيّر وماذا ومتى.</p><div class="r2" style="margin-bottom:10px"><button class="btn line" id="aul">⟳ تحديث</button></div><div id="aulist"><p class="hint">جارٍ التحميل…</p></div>`;
-  }else if(A.tab==='trash'){
-    body=`<p class="hint">أي أسئلة تُحذف (حتى لو حُذفت مادتها بالكامل) تبقى هنا 30 يوماً ويمكنك استرجاعها.</p><div id="trlist"><p class="hint">جارٍ التحميل…</p></div>`;
-  }else if(A.tab==='lb'){
-    body=`<p class="hint">الطلاب المنضمون إلى لوحة الشرف هذا الأسبوع. تقدر تزيل أي اسم مستعار غير لائق.</p><div id="lbbots"></div><div id="lblist"><p class="hint">جارٍ التحميل…</p></div>`;
-  }else if(A.tab==='ann'){
-    const sp=A.am==='sponsor';
-    body=`<div class="seg" role="group" aria-label="نوع الإعلان" style="margin-top:0"><button data-am="ann" aria-pressed="${!sp}">إعلان عادي</button><button data-am="sponsor" aria-pressed="${sp}">إعلان ممول</button></div>`+(sp?`
-      <p class="hint">يظهر بطاقة مميّزة بوسم «إعلان ممول» مع زر «انتقل الآن» يفتح رابط الراعي، وتُحصى المشاهدات والضغطات لكل إعلان.</p>
-      <label class="fld"><span>اسم الراعي (يظهر في الوسم)</span><input class="in" id="spn" maxlength="40" dir="auto" placeholder="مثلاً: شركة كذا للأدوية"></label>
-      <label class="fld"><span>نص الإعلان</span><textarea class="in" id="spm" dir="auto" maxlength="300" placeholder="جملة أو جملتان"></textarea></label>
-      <label class="fld"><span>الرابط (يفتح عند الضغط على الزر)</span><input class="in" id="spl" type="url" inputmode="url" placeholder="https://" style="direction:ltr;text-align:left"></label>
-      <label class="fld"><span>نص الزر</span><input class="in" id="spc" maxlength="20" value="انتقل الآن"></label>
-      <div class="fld"><span>صورة أو شعار الراعي (اختياري)</span><div class="cvbox"><div id="spp"><div class="cvph">بدون صورة</div></div><div style="display:flex;flex-direction:column;gap:6px"><button type="button" class="ib" id="spb">اختيار صورة</button><button type="button" class="ib del" id="spr">إزالة</button></div></div><input type="file" id="spf" accept="image/*" hidden></div>
-      <div class="r2"><label class="fld"><span>يبدأ (اختياري)</span><input class="in" id="sps" type="date" style="direction:ltr;text-align:center"></label><label class="fld"><span>ينتهي</span><input class="in" id="spe" type="date" style="direction:ltr;text-align:center"></label></div>
+      <h3 class="sec">\u0627\u0644\u0623\u0643\u0648\u0627\u062F \u0627\u0644\u0633\u0627\u0628\u0642\u0629</h3><div id="codelist"><p class="hint">\u062C\u0627\u0631\u064D \u0627\u0644\u062A\u062D\u0645\u064A\u0644\u2026</p></div>`;else if(A.tab==="inbox")a=`<div class="seg" role="group" aria-label="\u0627\u0644\u0642\u0633\u0645" style="margin-top:0"><button data-ib="reports" aria-pressed="${A.ib!=="reqs"}" id="ibr">\u062A\u0628\u0644\u064A\u063A\u0627\u062A \u0639\u0646 \u0623\u0633\u0626\u0644\u0629</button><button data-ib="reqs" aria-pressed="${A.ib==="reqs"}" id="ibq">\u0637\u0644\u0628\u0627\u062A \u0627\u0644\u0645\u0648\u0627\u062F</button></div>`+(A.ib==="reqs"?`<div class="seg" role="group" aria-label="\u0627\u0644\u062D\u0627\u0644\u0629" style="margin-top:0"><button data-qs="new" aria-pressed="${A.qs!=="done"}">\u062C\u062F\u064A\u062F\u0629</button><button data-qs="done" aria-pressed="${A.qs==="done"}">\u0645\u0646\u062C\u0632\u0629</button></div><div id="rqlist" style="margin-top:12px"><p class="hint">\u062C\u0627\u0631\u064D \u0627\u0644\u062A\u062D\u0645\u064A\u0644\u2026</p></div>`:`<div class="seg" role="group" aria-label="\u0627\u0644\u062D\u0627\u0644\u0629" style="margin-top:0"><button data-rs="open" aria-pressed="${A.rs==="open"}">\u0645\u0641\u062A\u0648\u062D\u0629</button><button data-rs="resolved" aria-pressed="${A.rs==="resolved"}">\u062A\u0645 \u062D\u0644\u0647\u0627</button></div><div id="rplist"><p class="hint">\u062C\u0627\u0631\u064D \u0627\u0644\u062A\u062D\u0645\u064A\u0644\u2026</p></div>`);else if(A.tab==="usage")a=`<div class="uv" id="uvroot"><div class="r2" style="margin-bottom:10px"><button class="btn line" id="uvrf">\u27F3 \u062A\u062D\u062F\u064A\u062B</button></div>
+      <div class="card"><h3>\u0642\u0627\u0639\u062F\u0629 \u0627\u0644\u0628\u064A\u0627\u0646\u0627\u062A</h3><p class="cap">Supabase: \u062C\u062F\u0627\u0648\u0644 \u0627\u0644\u0623\u0633\u0626\u0644\u0629 \u0648\u0627\u0644\u062D\u0633\u0627\u0628\u0627\u062A \u0648\u063A\u064A\u0631\u0647\u0627</p><div id="uvdb"><p class="hint">\u062C\u0627\u0631\u064D \u0627\u0644\u0642\u0631\u0627\u0621\u0629\u2026</p></div></div>
+      <div class="card"><h3>\u062A\u062E\u0632\u064A\u0646 Supabase</h3><p class="cap">\u0627\u0644\u0623\u063A\u0644\u0641\u0629 \u0648\u0627\u0644\u062A\u0639\u0644\u064A\u0642\u0627\u062A \u0648\u0627\u0644\u0645\u0644\u0641\u0627\u062A \u0627\u0644\u0642\u062F\u064A\u0645\u0629</p><div id="uvst"><p class="hint">\u062C\u0627\u0631\u064D \u0627\u0644\u0642\u0631\u0627\u0621\u0629\u2026</p></div></div>
+      <div class="card"><h3>\u062A\u062E\u0632\u064A\u0646 R2</h3><p class="cap">\u0635\u0648\u0631 \u0627\u0644\u0623\u0633\u0626\u0644\u0629 \u0648\u0628\u064A\u0627\u0646\u0627\u062A \u0627\u0644\u0637\u0644\u0627\u0628 (\u0645\u0644\u0627\u062D\u0638\u0627\u062A\u060C \u0623\u0633\u0626\u0644\u0629 \u062E\u0627\u0635\u0629\u060C \u062A\u0642\u062F\u0645)</p><div id="uvr2"><p class="hint">\u062C\u0627\u0631\u064D \u0627\u0644\u0642\u0631\u0627\u0621\u0629\u2026</p></div><div id="cfm"></div></div></div>`;else if(A.tab==="stats")a='<div id="stbox"><p class="hint">\u062C\u0627\u0631\u064D \u062D\u0633\u0627\u0628 \u0627\u0644\u0623\u0631\u0642\u0627\u0645\u2026</p></div>';else if(A.tab==="errors")a='<p class="hint">\u0623\u062E\u0637\u0627\u0621 \u0628\u0631\u0645\u062C\u064A\u0629 \u062D\u062F\u062B\u062A \u0641\u064A \u0623\u062C\u0647\u0632\u0629 \u0627\u0644\u0637\u0644\u0627\u0628. \u0643\u0644 \u0646\u0648\u0639 \u062E\u0637\u0623 \u064A\u0638\u0647\u0631 \u0645\u0631\u0629 \u0648\u0627\u062D\u062F\u0629 \u0645\u0639 \u0639\u062F\u062F \u0645\u0631\u0627\u062A\u0647. \u0625\u0630\u0627 \u0638\u0647\u0631 \u062E\u0637\u0623 \u062C\u062F\u064A\u062F \u0628\u0639\u062F \u062A\u062D\u062F\u064A\u062B\u060C \u0641\u0627\u0644\u062A\u062D\u062F\u064A\u062B \u063A\u0627\u0644\u0628\u0627\u064B \u0647\u0648 \u0627\u0644\u0633\u0628\u0628.</p><div class="r2" style="margin-bottom:10px"><button class="btn line" id="erl">\u27F3 \u062A\u062D\u062F\u064A\u062B</button><button class="btn line" id="erc">\u0645\u0633\u062D \u0627\u0644\u0643\u0644</button></div><div id="erlist"><p class="hint">\u062C\u0627\u0631\u064D \u0627\u0644\u062A\u062D\u0645\u064A\u0644\u2026</p></div>';else if(A.tab==="dev")a='<p class="hint">\u062D\u0633\u0627\u0628\u0627\u062A \u0633\u064F\u062C\u0651\u0644 \u062F\u062E\u0648\u0644\u0647\u0627 \u0645\u0646 3 \u0623\u062C\u0647\u0632\u0629 \u0645\u062E\u062A\u0644\u0641\u0629 \u0623\u0648 \u0623\u0643\u062B\u0631 \u062E\u0644\u0627\u0644 \u0622\u062E\u0631 7 \u0623\u064A\u0627\u0645. \u0627\u0644\u062D\u0633\u0627\u0628 \u064A\u0639\u0645\u0644 \u0639\u0644\u0649 \u062C\u0647\u0627\u0632 \u0648\u0627\u062D\u062F \u0641\u064A \u0643\u0644 \u0648\u0642\u062A\u060C \u0641\u0647\u0630\u0627 \u0627\u0644\u0639\u062F\u062F \u064A\u0639\u0646\u064A \u0623\u0646 \u0627\u0644\u062F\u062E\u0648\u0644 \u062A\u0643\u0631\u0631 \u0645\u0646 \u0623\u062C\u0647\u0632\u0629 \u0643\u062B\u064A\u0631\u0629\u060C \u0648\u063A\u0627\u0644\u0628\u0627\u064B \u0647\u0630\u0627 \u064A\u062F\u0644 \u0639\u0644\u0649 \u0645\u0634\u0627\u0631\u0643\u0629 \u0627\u0644\u062D\u0633\u0627\u0628. \u062A\u0642\u062F\u0631 \u062A\u062D\u0638\u0631 \u0627\u0644\u062D\u0633\u0627\u0628\u060C \u0623\u0648 \u062A\u0635\u0641\u0651\u0631 \u0627\u0644\u0639\u062F\u0651\u0627\u062F \u0628\u0639\u062F \u0623\u0646 \u062A\u0646\u0628\u0651\u0647 \u0627\u0644\u0637\u0627\u0644\u0628.</p><div class="r2" style="margin-bottom:10px"><button class="btn line" id="dvl">\u27F3 \u062A\u062D\u062F\u064A\u062B</button></div><div id="dvlist"><p class="hint">\u062C\u0627\u0631\u064D \u0627\u0644\u062A\u062D\u0645\u064A\u0644\u2026</p></div>';else if(A.tab==="audit")a='<p class="hint">\u0622\u062E\u0631 \u0627\u0644\u062A\u063A\u064A\u064A\u0631\u0627\u062A \u0639\u0644\u0649 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643\u0627\u062A \u0648\u0623\u0643\u0648\u0627\u062F \u0627\u0644\u062A\u0641\u0639\u064A\u0644: \u0645\u0646 \u063A\u064A\u0651\u0631 \u0648\u0645\u0627\u0630\u0627 \u0648\u0645\u062A\u0649.</p><div class="r2" style="margin-bottom:10px"><button class="btn line" id="aul">\u27F3 \u062A\u062D\u062F\u064A\u062B</button></div><div id="aulist"><p class="hint">\u062C\u0627\u0631\u064D \u0627\u0644\u062A\u062D\u0645\u064A\u0644\u2026</p></div>';else if(A.tab==="trash")a='<p class="hint">\u0623\u064A \u0623\u0633\u0626\u0644\u0629 \u062A\u064F\u062D\u0630\u0641 (\u062D\u062A\u0649 \u0644\u0648 \u062D\u064F\u0630\u0641\u062A \u0645\u0627\u062F\u062A\u0647\u0627 \u0628\u0627\u0644\u0643\u0627\u0645\u0644) \u062A\u0628\u0642\u0649 \u0647\u0646\u0627 30 \u064A\u0648\u0645\u0627\u064B \u0648\u064A\u0645\u0643\u0646\u0643 \u0627\u0633\u062A\u0631\u062C\u0627\u0639\u0647\u0627.</p><div id="trlist"><p class="hint">\u062C\u0627\u0631\u064D \u0627\u0644\u062A\u062D\u0645\u064A\u0644\u2026</p></div>';else if(A.tab==="lb")a='<p class="hint">\u0627\u0644\u0637\u0644\u0627\u0628 \u0627\u0644\u0645\u0646\u0636\u0645\u0648\u0646 \u0625\u0644\u0649 \u0644\u0648\u062D\u0629 \u0627\u0644\u0634\u0631\u0641 \u0647\u0630\u0627 \u0627\u0644\u0623\u0633\u0628\u0648\u0639. \u062A\u0642\u062F\u0631 \u062A\u0632\u064A\u0644 \u0623\u064A \u0627\u0633\u0645 \u0645\u0633\u062A\u0639\u0627\u0631 \u063A\u064A\u0631 \u0644\u0627\u0626\u0642.</p><div id="lbbots"></div><div id="lblist"><p class="hint">\u062C\u0627\u0631\u064D \u0627\u0644\u062A\u062D\u0645\u064A\u0644\u2026</p></div>';else if(A.tab==="ann"){const n=A.am==="sponsor";a=`<div class="seg" role="group" aria-label="\u0646\u0648\u0639 \u0627\u0644\u0625\u0639\u0644\u0627\u0646" style="margin-top:0"><button data-am="ann" aria-pressed="${!n}">\u0625\u0639\u0644\u0627\u0646 \u0639\u0627\u062F\u064A</button><button data-am="sponsor" aria-pressed="${n}">\u0625\u0639\u0644\u0627\u0646 \u0645\u0645\u0648\u0644</button></div>`+(n?`
+      <p class="hint">\u064A\u0638\u0647\u0631 \u0628\u0637\u0627\u0642\u0629 \u0645\u0645\u064A\u0651\u0632\u0629 \u0628\u0648\u0633\u0645 \xAB\u0625\u0639\u0644\u0627\u0646 \u0645\u0645\u0648\u0644\xBB \u0645\u0639 \u0632\u0631 \xAB\u0627\u0646\u062A\u0642\u0644 \u0627\u0644\u0622\u0646\xBB \u064A\u0641\u062A\u062D \u0631\u0627\u0628\u0637 \u0627\u0644\u0631\u0627\u0639\u064A\u060C \u0648\u062A\u064F\u062D\u0635\u0649 \u0627\u0644\u0645\u0634\u0627\u0647\u062F\u0627\u062A \u0648\u0627\u0644\u0636\u063A\u0637\u0627\u062A \u0644\u0643\u0644 \u0625\u0639\u0644\u0627\u0646.</p>
+      <label class="fld"><span>\u0627\u0633\u0645 \u0627\u0644\u0631\u0627\u0639\u064A (\u064A\u0638\u0647\u0631 \u0641\u064A \u0627\u0644\u0648\u0633\u0645)</span><input class="in" id="spn" maxlength="40" dir="auto" placeholder="\u0645\u062B\u0644\u0627\u064B: \u0634\u0631\u0643\u0629 \u0643\u0630\u0627 \u0644\u0644\u0623\u062F\u0648\u064A\u0629"></label>
+      <label class="fld"><span>\u0646\u0635 \u0627\u0644\u0625\u0639\u0644\u0627\u0646</span><textarea class="in" id="spm" dir="auto" maxlength="300" placeholder="\u062C\u0645\u0644\u0629 \u0623\u0648 \u062C\u0645\u0644\u062A\u0627\u0646"></textarea></label>
+      <label class="fld"><span>\u0627\u0644\u0631\u0627\u0628\u0637 (\u064A\u0641\u062A\u062D \u0639\u0646\u062F \u0627\u0644\u0636\u063A\u0637 \u0639\u0644\u0649 \u0627\u0644\u0632\u0631)</span><input class="in" id="spl" type="url" inputmode="url" placeholder="https://" style="direction:ltr;text-align:left"></label>
+      <label class="fld"><span>\u0646\u0635 \u0627\u0644\u0632\u0631</span><input class="in" id="spc" maxlength="20" value="\u0627\u0646\u062A\u0642\u0644 \u0627\u0644\u0622\u0646"></label>
+      <div class="fld"><span>\u0635\u0648\u0631\u0629 \u0623\u0648 \u0634\u0639\u0627\u0631 \u0627\u0644\u0631\u0627\u0639\u064A (\u0627\u062E\u062A\u064A\u0627\u0631\u064A)</span><div class="cvbox"><div id="spp"><div class="cvph">\u0628\u062F\u0648\u0646 \u0635\u0648\u0631\u0629</div></div><div style="display:flex;flex-direction:column;gap:6px"><button type="button" class="ib" id="spb">\u0627\u062E\u062A\u064A\u0627\u0631 \u0635\u0648\u0631\u0629</button><button type="button" class="ib del" id="spr">\u0625\u0632\u0627\u0644\u0629</button></div></div><input type="file" id="spf" accept="image/*" hidden></div>
+      <div class="r2"><label class="fld"><span>\u064A\u0628\u062F\u0623 (\u0627\u062E\u062A\u064A\u0627\u0631\u064A)</span><input class="in" id="sps" type="date" style="direction:ltr;text-align:center"></label><label class="fld"><span>\u064A\u0646\u062A\u0647\u064A</span><input class="in" id="spe" type="date" style="direction:ltr;text-align:center"></label></div>
       ${audienceHtml()}
       <p class="err" id="er" role="alert"></p>
-      <button class="btn block" id="spsv">نشر الإعلان الممول</button>`
-    :`<label class="fld"><span>نص الإعلان (يظهر لكل الطلاب والزوار بالرئيسية)</span><textarea class="in" id="am" dir="auto" maxlength="400" placeholder="مثلاً: أضفنا 200 سؤالاً جديداً بالباطنية"></textarea></label>
+      <button class="btn block" id="spsv">\u0646\u0634\u0631 \u0627\u0644\u0625\u0639\u0644\u0627\u0646 \u0627\u0644\u0645\u0645\u0648\u0644</button>`:`<label class="fld"><span>\u0646\u0635 \u0627\u0644\u0625\u0639\u0644\u0627\u0646 (\u064A\u0638\u0647\u0631 \u0644\u0643\u0644 \u0627\u0644\u0637\u0644\u0627\u0628 \u0648\u0627\u0644\u0632\u0648\u0627\u0631 \u0628\u0627\u0644\u0631\u0626\u064A\u0633\u064A\u0629)</span><textarea class="in" id="am" dir="auto" maxlength="400" placeholder="\u0645\u062B\u0644\u0627\u064B: \u0623\u0636\u0641\u0646\u0627 200 \u0633\u0624\u0627\u0644\u0627\u064B \u062C\u062F\u064A\u062F\u0627\u064B \u0628\u0627\u0644\u0628\u0627\u0637\u0646\u064A\u0629"></textarea></label>
       ${audienceHtml()}
-      <label class="fld"><span>مدة الظهور</span><select class="in" id="ad"><option value="1">يوم واحد</option><option value="2">يومان</option><option value="3">3 أيام</option><option value="7" selected>7 أيام</option><option value="14">14 يوماً</option><option value="30">30 يوماً</option><option value="0">بدون انتهاء</option></select></label>
+      <label class="fld"><span>\u0645\u062F\u0629 \u0627\u0644\u0638\u0647\u0648\u0631</span><select class="in" id="ad"><option value="1">\u064A\u0648\u0645 \u0648\u0627\u062D\u062F</option><option value="2">\u064A\u0648\u0645\u0627\u0646</option><option value="3">3 \u0623\u064A\u0627\u0645</option><option value="7" selected>7 \u0623\u064A\u0627\u0645</option><option value="14">14 \u064A\u0648\u0645\u0627\u064B</option><option value="30">30 \u064A\u0648\u0645\u0627\u064B</option><option value="0">\u0628\u062F\u0648\u0646 \u0627\u0646\u062A\u0647\u0627\u0621</option></select></label>
       <p class="err" id="er" role="alert"></p>
-      <button class="btn block" id="asv">نشر الإعلان</button>`)+`
-      <h3 class="sec">الإعلانات السابقة</h3><div id="annlist"><p class="hint">جارٍ التحميل…</p></div>`;
-  }else{
-    body=`<button class="btn block" id="newStu">+ حساب طالب جديد</button><button class="btn line block" id="chkRef" style="margin-top:8px">🔎 التحقق من كود إحالة (لتحديد الخصم)</button><button class="btn line block" id="expU" style="margin-top:8px">⬇ تصدير قائمة الطلاب (CSV)</button><input class="in" id="fu" placeholder="بحث بالاسم أو اسم المستخدم" value="${esc(A.fu)}" style="margin:12px 0 8px"><div class="seg" role="group" aria-label="تصفية" style="margin:0 0 12px"><button data-fx="all" aria-pressed="${A.fx==='all'}">الكل</button><button data-fx="soon" aria-pressed="${A.fx==='soon'}">ينتهي خلال 7 أيام</button><button data-fx="ended" aria-pressed="${A.fx==='ended'}">منتهي</button></div><div id="ulist"><p class="hint">جارٍ التحميل…</p></div>`;
-  }
-  app.innerHTML=`
-  <div class="top"><div class="brand">لوحة التحكم<small>${ar(Store.specialties.length)} اختصاص، ${ar(Store.subjects.length)} مادة، ${ar(cntTotal())} سؤال</small></div>
-    <button class="pill" id="out">تسجيل الخروج</button></div>
-  <div class="seg tabs" role="group" aria-label="القسم" style="margin-top:0">
-    <button data-t="stats" aria-pressed="${A.tab==='stats'}">الأرقام</button>
-    <button data-t="usage" aria-pressed="${A.tab==='usage'}">الاستهلاك</button>
-    <button data-t="specs" aria-pressed="${A.tab==='specs'}">الاختصاصات</button>
-    <button data-t="subjects" aria-pressed="${A.tab==='subjects'}">المواد</button>
-    <button data-t="questions" aria-pressed="${A.tab==='questions'}">الأسئلة</button>
-    <button data-t="codes" aria-pressed="${A.tab==='codes'}">الأكواد</button>
-    <button data-t="users" aria-pressed="${A.tab==='users'}">الطلاب</button>
-    <button data-t="inbox" aria-pressed="${A.tab==='inbox'}">التبليغات والطلبات</button>
-    <button data-t="ann" aria-pressed="${A.tab==='ann'}">الإعلانات</button>
-    <button data-t="lb" aria-pressed="${A.tab==='lb'}">لوحة الشرف</button>
-    <button data-t="trash" aria-pressed="${A.tab==='trash'}">المحذوفات</button>
-    <button data-t="errors" aria-pressed="${A.tab==='errors'}">الأخطاء</button>
-    <button data-t="dev" aria-pressed="${A.tab==='dev'}">الأجهزة</button>
-    <button data-t="audit" aria-pressed="${A.tab==='audit'}">السجل</button></div>
-  ${backupBanner()}${body}`;
-  {const nt=app.querySelector('.tabs');
-   if(nt){
-     if(_sl!==null)nt.scrollLeft=_sl;
-     const ab=nt.querySelector('[aria-pressed="true"]');
-     if(ab){const r=ab.getBoundingClientRect(),c=nt.getBoundingClientRect();if(r.left<c.left+8||r.right>c.right-8)ab.scrollIntoView({inline:'center',block:'nearest'})}
-   }}
-  $('out').onclick=adminLogout;
-  inboxBadge();
-  app.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{A.tab=b.dataset.t;admin()});
-  if(A.tab==='specs'){
-    $('addP').onclick=()=>entityForm('specialties');
-    app.querySelectorAll('[data-ep]').forEach(b=>b.onclick=()=>entityForm('specialties',b.dataset.ep));
-    app.querySelectorAll('[data-dp]').forEach(b=>b.onclick=()=>deleteEntity('specialties',b.dataset.dp));
-  }else if(A.tab==='subjects'){
-    $('addS').onclick=()=>entityForm('subjects');
-    $('fsp').onchange=e=>{A.fsp=e.target.value;admin()};
-    app.querySelectorAll('[data-es]').forEach(b=>b.onclick=()=>entityForm('subjects',b.dataset.es));
-    app.querySelectorAll('[data-ds]').forEach(b=>b.onclick=()=>deleteEntity('subjects',b.dataset.ds));
-    app.querySelectorAll('[data-ys]').forEach(b=>b.onclick=()=>systemsSheet(b.dataset.ys));
-  }else if(A.tab==='questions'){
-    $('addQ').onclick=()=>questionForm();
-    loadUsage();
-    $('bulk').onclick=bulkForm;
-    $('bkc').onclick=()=>exportBackup('csv');
-    $('bkf').onclick=fullBackup;
-    $('r2st').onclick=()=>{A.tab='usage';admin()};
-    $('r2cl').onclick=cleanR2;
-    loadCmtState();
-    loadBackupInfo();
-    $('fs').onchange=e=>{A.fs=e.target.value;A.qn=60;qList()};
-    $('fq').oninput=e=>{A.fq=e.target.value.trim();A.qn=60;clearTimeout(qList.t);qList.t=setTimeout(()=>qList(),300)};
-    qList();
-  }else if(A.tab==='codes'){
-    $('mk').onclick=makeCodes;bindPriceChips();
-    loadCodes();
-  }else if(A.tab==='inbox'){
-    app.querySelectorAll('[data-ib]').forEach(b=>b.onclick=()=>{A.ib=b.dataset.ib;admin()});
-    if(A.ib==='reqs'){app.querySelectorAll('[data-qs]').forEach(b=>b.onclick=()=>{A.qs=b.dataset.qs;admin()});loadRequests()}
-    else{app.querySelectorAll('[data-rs]').forEach(b=>b.onclick=()=>{A.rs=b.dataset.rs;admin()});loadReports()}
-  }else if(A.tab==='usage'){
-    $('uvrf').onclick=()=>{loadUsageTab()};
-    loadUsageTab();
-  }else if(A.tab==='stats'){
-    loadStats();
-  }else if(A.tab==='dev'){
-    $('dvl').onclick=()=>loadDevs();
-    loadDevs();
-  }else if(A.tab==='audit'){
-    $('aul').onclick=()=>loadAudit();
-    loadAudit();
-  }else if(A.tab==='errors'){
-    $('erl').onclick=()=>loadErrors();
-    $('erc').onclick=async()=>{
-      if(!(await askConfirm('مسح كل الأخطاء','ستُحذف جميع الأخطاء المسجلة. إن تكررت ستظهر من جديد.','امسح')))return;
-      const r=await sb.rpc('admin_errors_clear');
-      if(r.error){toast(errMsg(r.error));return}
-      loadErrors();
-    };
-    loadErrors();
-  }else if(A.tab==='trash'){
-    loadTrash();
-  }else if(A.tab==='lb'){
-    loadLb();
-  }else if(A.tab==='ann'){
-    app.querySelectorAll('[data-am]').forEach(b=>b.onclick=()=>{A.am=b.dataset.am;admin()});
-    bindAudience();
-    if(A.am==='sponsor'){bindSponsorForm();$('spsv').onclick=publishSponsor}else $('asv').onclick=publishAnn;
-    loadAnn();
-  }else{
-    $('newStu').onclick=createStudentForm;
-    $('chkRef').onclick=checkRefForm;
-    $('expU').onclick=exportUsers;
-    $('fu').oninput=e=>{A.fu=e.target.value.trim().toLowerCase();A.un=40;renderUsers()};
-    app.querySelectorAll('[data-fx]').forEach(b=>b.onclick=()=>{A.fx=b.dataset.fx;A.un=40;admin()});
-    loadUsers();
-  }
-}
-/* ---------- التبليغات ---------- */
-const RLABEL={wrong_answer:'الجواب الصحيح غير صحيح',explanation:'الشرح خاطئ أو ناقص',typo:'خطأ إملائي أو لغوي',unclear:'السؤال أو الخيارات غير واضحة',other:'سبب آخر'};
-async function loadRequests(){
-  const el=$('rqlist');if(!el)return;
-  const done=A.qs==='done';
-  const r=await sb.from('subject_requests').select('*').eq('status',done?'done':'new').order('created_at',{ascending:false}).limit(100);
-  if(!$('rqlist'))return;
-  if(r.error){$('rqlist').innerHTML=`<p class="err">${esc(errMsg(r.error))}</p>`;return}
-  const rows=r.data;
-  if(!rows.length){$('rqlist').innerHTML=`<div class="empty">${done?'لا توجد طلبات منجزة.':'لا توجد طلبات جديدة.'}</div>`;return}
-  const uids=[...new Set(rows.map(x=>x.user_id))];
-  const pr=await sb.from('profiles').select('id,full_name,username').in('id',uids);
-  const pm={};(pr.data||[]).forEach(p=>{pm[p.id]=p});
-  if(!$('rqlist'))return;
-  $('rqlist').innerHTML=rows.map(x=>{
-    const p=pm[x.user_id]||{},sp=spById(x.specialty_id);
-    return `<div class="item" style="--sc:${safeC(sp.c)};align-items:flex-start"><div class="grow">
-      <div class="nm">${esc(x.subject_name||'')}</div>
-      <div class="sub">${esc(sp.n)}، ${esc(p.full_name||p.username||'')}${p.username?' (@'+esc(p.username)+')':''}، ${fdate(x.created_at)}</div>
-      ${x.note?`<div class="sub" dir="auto" style="color:var(--ink)">${esc(x.note)}</div>`:''}
-      <div class="sub" dir="auto">${esc(x.file_name||'')}</div>
-      <div class="acts3"><button class="ib" data-rqd="${esc(x.id)}">تنزيل الملف</button><button class="ib" data-rqv="${esc(x.id)}">${done?'إعادة فتح':'تم الإنجاز'}</button><button class="ib del" data-rqx="${esc(x.id)}">حذف</button></div></div></div>`;
-  }).join('');
-  const byId={};rows.forEach(x=>{byId[x.id]=x});
-  $('rqlist').querySelectorAll('[data-rqd]').forEach(b=>b.onclick=async()=>{
-    const x=byId[b.dataset.rqd];
-    const u=await sb.storage.from('request-files').createSignedUrl(x.file_path,300,{download:x.file_name||true});
-    if(u.error){toast(errMsg(u.error));return}
-    window.open(u.data.signedUrl,'_blank');
-  });
-  $('rqlist').querySelectorAll('[data-rqv]').forEach(b=>b.onclick=async()=>{
-    const u=await sb.from('subject_requests').update({status:done?'new':'done'}).eq('id',b.dataset.rqv);
-    if(u.error){toast(errMsg(u.error));return}
-    admin();
-  });
-  $('rqlist').querySelectorAll('[data-rqx]').forEach(b=>b.onclick=async()=>{
-    const x=byId[b.dataset.rqx];
-    if(!await askConfirm('حذف الطلب','سيُحذف الطلب مع الملف المرفق نهائياً.','احذف'))return;
-    try{await sb.storage.from('request-files').remove([x.file_path])}catch(e){}
-    const d=await sb.from('subject_requests').delete().eq('id',x.id);
-    if(d.error){toast(errMsg(d.error));return}
-    toast('تم الحذف');admin();
-  });
-}
-async function inboxBadge(){
-  try{
-    const [q,r]=await Promise.all([sb.from('subject_requests').select('id',{count:'exact',head:true}).eq('status','new'),sb.from('question_reports').select('id',{count:'exact',head:true}).eq('status','open')]);
-    const nq=q.error?0:(q.count||0),nr=r.error?0:(r.count||0);
-    const t=app.querySelector('[data-t="inbox"]');if(t&&nq+nr>0)t.textContent='التبليغات والطلبات ('+(nq+nr)+')';
-    const br=$('ibr'),bq=$('ibq');
-    if(br&&nr>0)br.textContent='تبليغات عن أسئلة ('+nr+')';
-    if(bq&&nq>0)bq.textContent='طلبات المواد ('+nq+')';
-  }catch(e){}
-}
-async function loadReports(){
-  const el=$('rplist');if(!el)return;
-  const r=await sb.from('question_reports').select('*').eq('status',A.rs).order('created_at',{ascending:false}).limit(100);
-  if(!$('rplist'))return;
-  if(r.error){$('rplist').innerHTML=`<p class="err">${esc(errMsg(r.error))}</p>`;return}
-  const rows=r.data;
-  if(!rows.length){$('rplist').innerHTML=`<div class="empty">${A.rs==='open'?'لا توجد تبليغات مفتوحة. ممتاز.':'لا توجد تبليغات محلولة بعد.'}</div>`;return}
-  const qids=[...new Set(rows.map(x=>x.question_id))],uids=[...new Set(rows.map(x=>x.user_id))];
-  const [qr,pr]=await Promise.all([sb.from('questions').select('*').in('id',qids),sb.from('profiles').select('id,full_name,username').in('id',uids)]);
-  const qm={},pm={};(qr.data||[]).forEach(q=>{qm[q.id]=q});(pr.data||[]).forEach(p=>{pm[p.id]=p});
-  QL=qr.data||[];
-  if(!$('rplist'))return;
-  $('rplist').innerHTML=rows.map(x=>{
-    const q=qm[x.question_id],p=pm[x.user_id]||{},sj=q?subjOf(q.s):{n:'',c:'#5A6B77'};
-    return `<div class="item" style="--sc:${safeC(sj.c)};align-items:flex-start"><div class="grow">
-      <div class="qt" dir="${q?dirOf(q.q):'rtl'}">${q?esc(q.q):'سؤال محذوف'}</div>
-      <div class="sub"><b>${esc(RLABEL[x.reason]||x.reason)}</b></div>
-      ${x.note?`<div class="sub" dir="auto" style="color:var(--ink)">${esc(x.note)}</div>`:''}
-      <div class="sub">${esc(p.full_name||p.username||'')}${p.username?' (@'+esc(p.username)+')':''}، ${fdate(x.created_at)}، ${esc(sj.n)}</div>
-      <div class="acts3">${q?`<button class="ib" data-oq="${esc(q.id)}">فتح السؤال</button>`:''}<button class="ib" data-rv="${esc(x.id)}">${A.rs==='open'?'تم الحل':'إعادة فتح'}</button><button class="ib del" data-rd="${esc(x.id)}">حذف</button></div></div></div>`;
-  }).join('');
-  $('rplist').querySelectorAll('[data-oq]').forEach(b=>b.onclick=()=>questionForm(b.dataset.oq));
-  $('rplist').querySelectorAll('[data-rv]').forEach(b=>b.onclick=async()=>{
-    const u=await sb.from('question_reports').update({status:A.rs==='open'?'resolved':'open'}).eq('id',b.dataset.rv);
-    if(u.error){toast(errMsg(u.error));return}
-    toast(A.rs==='open'?'تم تحديد التبليغ كمحلول':'أُعيد فتح التبليغ');admin();
-  });
-  $('rplist').querySelectorAll('[data-rd]').forEach(b=>b.onclick=async()=>{
-    if(!(await askConfirm('حذف التبليغ','سيُحذف هذا التبليغ نهائياً.','احذف')))return;
-    const d=await sb.from('question_reports').delete().eq('id',b.dataset.rd);
-    if(d.error){toast(errMsg(d.error));return}
-    toast('تم حذف التبليغ');admin();
-  });
-}
-
-/* ---------- الإعلانات ---------- */
-function audienceHtml(){
-  return `<div class="fld"><span>لمن يظهر؟ (يمكن اختيار أكثر من فئة)</span>
-    <label class="chk"><input type="checkbox" id="aud-all" checked><span>كل الطلاب والزوار</span></label>
-    ${Store.specialties.map(p=>`<label class="chk" style="margin-top:0"><input type="checkbox" data-aud="${esc(p.id)}"><span>مشتركو ${esc(p.n)} فقط</span></label>`).join('')}</div>`;
-}
-function bindAudience(){
-  const all=$('aud-all');if(!all)return;
-  const sps=()=>Array.from(document.querySelectorAll('[data-aud]'));
-  all.onchange=()=>{if(all.checked)sps().forEach(x=>{x.checked=false});else if(!sps().some(x=>x.checked))all.checked=true};
-  sps().forEach(x=>x.onchange=()=>{if(x.checked)all.checked=false;else if(!sps().some(y=>y.checked))all.checked=true});
-}
-const readAudience=()=>Array.from(document.querySelectorAll('[data-aud]:checked')).map(x=>x.dataset.aud);
-const audText=x=>{
-  const ids=(x.sp_ids&&x.sp_ids.length)?x.sp_ids:(x.specialty_id?[x.specialty_id]:[]);
-  return ids.length?'مشتركو '+ids.map(i=>spById(i).n).join('، '):'كل الطلاب والزوار';
-};
-async function publishAnn(){
-  const m=$('am').value.trim(),days=parseInt($('ad').value,10)||0;
-  if(!m){$('er').textContent='اكتب نص الإعلان.';return}
-  $('asv').disabled=true;
-  const row={message:m,kind:'ann',sp_ids:readAudience()};
-  if(days>0)row.ends_at=new Date(Date.now()+days*864e5).toISOString();
-  const r=await sb.from('announcements').insert(row);
-  if(r.error){$('er').textContent=errMsg(r.error);$('asv').disabled=false;return}
-  toast('تم نشر الإعلان');admin();
-}
-let SPBLOB=null;
-function bindSponsorForm(){
-  SPBLOB=null;
-  $('spb').onclick=()=>$('spf').click();
-  $('spf').onchange=async ev=>{
-    const f=ev.target.files[0];if(!f)return;
-    try{SPBLOB=await squareJpeg(f,320);$('spp').innerHTML=`<img class="cov" style="width:80px;height:80px" src="${URL.createObjectURL(SPBLOB)}" alt="">`}
-    catch(x){toast(errMsg(x))}
-  };
-  $('spr').onclick=()=>{SPBLOB=null;$('spf').value='';$('spp').innerHTML='<div class="cvph">بدون صورة</div>'};
-}
-const dayStart=s=>{const p=s.split('-');return new Date(+p[0],+p[1]-1,+p[2],0,0,0)};
-const dayEnd=s=>{const p=s.split('-');return new Date(+p[0],+p[1]-1,+p[2],23,59,59)};
-async function publishSponsor(){
-  const nm=$('spn').value.trim(),msg=$('spm').value.trim(),link=$('spl').value.trim(),cta=$('spc').value.trim()||'انتقل الآن',s=$('sps').value,e=$('spe').value,er=$('er');
-  if(!nm){er.textContent='اكتب اسم الراعي.';return}
-  if(!msg){er.textContent='اكتب نص الإعلان.';return}
-  let ok=/^https?:\/\/\S+$/i.test(link);try{if(ok)new URL(link)}catch(x){ok=false}
-  if(!ok){er.textContent='اكتب رابطاً صحيحاً يبدأ بـ https://';return}
-  if(!e){er.textContent='اختر تاريخ انتهاء الإعلان.';return}
-  const ends=dayEnd(e),starts=s?dayStart(s):null;
-  if(ends<=new Date()){er.textContent='تاريخ الانتهاء يجب أن يكون اليوم أو بعده.';return}
-  if(starts&&starts>=ends){er.textContent='تاريخ البداية يجب أن يسبق تاريخ الانتهاء.';return}
-  er.textContent='';$('spsv').disabled=true;
-  const id=(crypto.randomUUID&&crypto.randomUUID())||null;
-  const row={kind:'sponsor',message:msg,sponsor_name:nm,link_url:link,cta:cta,sp_ids:readAudience(),ends_at:ends.toISOString()};
-  if(id)row.id=id;
-  if(starts)row.starts_at=starts.toISOString();
-  let path=null;
-  try{
-    if(SPBLOB){
-      path='ads/'+(id||Date.now())+'-'+Date.now()+'.jpg';
-      const u=await sb.storage.from('covers').upload(path,SPBLOB,{contentType:'image/jpeg',upsert:true});
-      if(u.error)throw u.error;
-      row.image_url=sb.storage.from('covers').getPublicUrl(path).data.publicUrl;
-    }
-    const r=await sb.from('announcements').insert(row);
-    if(r.error){if(path){try{await sb.storage.from('covers').remove([path])}catch(x){}}throw r.error}
-    toast('تم نشر الإعلان الممول');admin();
-  }catch(x){er.textContent=errMsg(x);$('spsv').disabled=false}
-}
-async function loadAnn(){
-  const r=await sb.from('announcements').select('*').order('created_at',{ascending:false}).limit(50);
-  const el=$('annlist');if(!el)return;
-  if(r.error){el.innerHTML=`<p class="err">${esc(errMsg(r.error))}</p>`;return}
-  const sp=r.data.filter(x=>x.kind==='sponsor').map(x=>x.id),st={};
-  if(sp.length){
-    const s=await sb.from('ad_stats').select('*').in('ad_id',sp);
-    const d7=new Date(Date.now()-6*864e5).toISOString().slice(0,10);
-    (s.data||[]).forEach(x=>{const o=st[x.ad_id]||(st[x.ad_id]={v:0,c:0,v7:0,c7:0});o.v+=x.v;o.c+=x.c;if(x.day>=d7){o.v7+=x.v;o.c7+=x.c}});
-  }
-  if(!$('annlist'))return;
-  const now=Date.now();
-  el.innerHTML=r.data.length?r.data.map(x=>{
-    const ended=x.ends_at&&new Date(x.ends_at).getTime()<=now,future=x.starts_at&&new Date(x.starts_at).getTime()>now,live=x.active&&!ended&&!future;
-    const state=live?'ظاهر':(!x.active?'موقوف':(ended?'انتهى':'مجدول'));
-    const sps=x.kind==='sponsor';
-    const o=st[x.id]||{v:0,c:0,v7:0,c7:0};
-    const stats=sps?`<div class="sub" style="margin-top:4px">📊 مشاهدات <b>${ar(o.v)}</b>، ضغطات <b>${ar(o.c)}</b>${o.v?'، نسبة الضغط <b>'+ar((100*o.c/o.v).toFixed(1))+'%</b>':''} · آخر 7 أيام: ${ar(o.v7)} مشاهدة، ${ar(o.c7)} ضغطة</div><div class="sub" dir="ltr" style="text-align:start;word-break:break-all">${esc(x.link_url||'')}</div>`:'';
-    return `<div class="item" style="--sc:${live?(sps?'#B7791F':'#1F5FBF'):'#5A6B77'};align-items:flex-start"><div class="grow">${sps?`<div class="sub"><b>🏷 ممول: ${esc(x.sponsor_name||'')}</b></div>`:''}<div class="qt" dir="${dirOf(x.message)}">${esc(x.message)}</div>
-      <div class="sub"><b>${esc(audText(x))}</b>، <b style="color:${live?'#1F5FBF':'#B93A32'}">${state}</b>، نُشر ${fdate(x.created_at)}${x.starts_at&&future?'، يبدأ '+fdate(x.starts_at):''}${x.ends_at&&!ended?'، ينتهي '+fdate(x.ends_at):''}</div>${stats}
-      <div class="acts3"><button class="ib ${x.active?'del':''}" data-at="${esc(x.id)}" data-on="${x.active?1:0}">${x.active?'إيقاف الإعلان':'إعادة التفعيل'}</button><button class="ib del" data-ad="${esc(x.id)}">حذف</button></div></div></div>`;
-  }).join(''):'<div class="empty">لا توجد إعلانات بعد.</div>';
-  el.querySelectorAll('[data-at]').forEach(b=>b.onclick=async()=>{
-    const u=await sb.from('announcements').update({active:b.dataset.on!=='1'}).eq('id',b.dataset.at);
-    if(u.error){toast(errMsg(u.error));return}
-    toast(b.dataset.on==='1'?'تم إيقاف الإعلان':'تمت إعادة تفعيل الإعلان');loadAnn();
-  });
-  el.querySelectorAll('[data-ad]').forEach(b=>b.onclick=async()=>{
-    if(!(await askConfirm('حذف الإعلان','سيُحذف هذا الإعلان نهائياً مع إحصائياته.','احذف')))return;
-    const row=r.data.find(x=>x.id===b.dataset.ad),p=row&&covPath(row.image_url);
-    const d=await sb.from('announcements').delete().eq('id',b.dataset.ad);
-    if(d.error){toast(errMsg(d.error));return}
-    if(p){try{await sb.storage.from('covers').remove([p])}catch(x){}}
-    toast('تم حذف الإعلان');loadAnn();
-  });
-}
-
-/* ---------- نسخة احتياطية ---------- */
-function downloadFile(name,text,type){
-  const blob=new Blob([text],{type:type});
-  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;
-  document.body.appendChild(a);a.click();
-  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1500);
-}
-/* ---------- تذكير وإدارة النسخ الاحتياطي ---------- */
-function backupBanner(){
-  let t=0;try{t=+localStorage.getItem('bc_last_backup')||0}catch(e){}
-  const d=t?Math.floor((Date.now()-t)/864e5):null;
-  if(d!==null&&d<7)return '';
-  return `<div class="banner" style="display:flex;gap:8px;align-items:center;justify-content:space-between"><span>${d===null?'لم تنزّل نسخة كاملة على جهازك بعد.':'آخر نسخة كاملة نزّلتها قبل '+ar(d)+' يوماً.'} النسخة التلقائية تبقى داخل Supabase نفسه، فاحتفظ بنسخة على جهازك.</span><button class="pill" data-t="questions">نزّل الآن</button></div>`;
-}
-async function loadBackupInfo(){
-  const el=$('bkinfo');if(!el)return;
-  let t=0;try{t=+localStorage.getItem('bc_last_backup')||0}catch(e){}
-  const r=await sb.rpc('admin_snapshots');
-  if(!$('bkinfo'))return;
-  const rows=r.error?[]:(r.data||[]);
-  el.innerHTML='آخر نسخة نزّلتها: '+(t?fdate(t):'لم تنزّل بعد')+'. '+(rows.length?'نسخة تلقائية أسبوعية للحسابات والاشتراكات والأكواد (كل أحد)، آخرها '+fdate(rows[0].at)+'، ومحفوظ منها '+ar(rows.length)+'. <button class="pill" id="snapdl">تنزيل آخر نسخة تلقائية</button>':'')+'<br>كلمات السر لا تدخل في أي نسخة.';
-  const b=$('snapdl');if(b)b.onclick=async()=>{
-    const g=await sb.rpc('admin_snapshot_get',{p_id:rows[0].id});
-    if(g.error||!g.data){toast(errMsg(g.error));return}
-    downloadFile('boardcard-accounts-snapshot-'+new Date(rows[0].at).toISOString().slice(0,10)+'.json',JSON.stringify(g.data,null,1),'application/json');
-  };
-}
-/* ---------- نسخة شاملة + مراقبة الاستهلاك (R2) ---------- */
-const R2_LIMIT_GB=10,PART_BYTES=200*1048576;
-const BK_TABLES=['leaderboard','activity_days','question_stats','league_members','challenges','challenge_results','live_exams','live_results','daily_sets','referrals','sales','partners','announcements','question_reports','question_choices','q_seen','q_quota','lb_config','lb_bots','app_config','ai_usage','ai_chat_usage','ad_stats','subject_requests','question_deletions','questions_trash','subjects_trash','ai_explanations'];
-const BK_BUCKETS=[['question-comments','comments'],['user-progress','progress'],['user-notes','legacy-notes'],['covers','covers']];
-async function r2Fetch(path){
-  const s=(await sb.auth.getSession()).data.session;
-  if(!s)throw new Error('انتهت الجلسة، سجّل الدخول من جديد.');
-  return fetch(path,{headers:{Authorization:'Bearer '+s.access_token}});
-}
-async function r2ListAll(b,prog){
-  let cur=null,out=[];
-  do{
-    const r=await r2Fetch('/api/admin/list?b='+b+(cur?'&cursor='+encodeURIComponent(cur):''));
-    if(!r.ok)throw new Error(r.status===403?'ما عندك صلاحية.':'تعذر قراءة الملفات من R2. تأكد من رفع آخر نسخة من worker.js.');
-    const j=await r.json();out=out.concat(j.objects||[]);cur=j.cursor;
-    if(prog)prog(out.length);
-  }while(cur);
-  return out;
-}
-const mbs=n=>{const v=n/1048576;return v<10?v.toFixed(1):Math.round(v)};
-async function loadCmtState(){
-  const b=$('cmtb');if(!b)return;
-  const r=await sb.rpc('admin_comments_state');
-  if(!$('cmtb'))return;
-  if(r.error){b.textContent='💬 التعليقات: تعذر قراءة الحالة';return}
-  const on=!!r.data;
-  b.textContent=on?'💬 التعليقات مفعّلة (اضغط لإيقاف الإضافة)':'💬 التعليقات موقوفة (اضغط لتفعيلها)';
-  b.onclick=async()=>{
-    const msg=on?'سيتوقف الطلاب عن إضافة تعليقات جديدة، ويبقى النقاش الموجود ظاهراً.':'سيستطيع الطلاب إضافة التعليقات من جديد.';
-    if(!(await askConfirm(on?'إيقاف التعليقات':'تفعيل التعليقات',msg,on?'أوقف':'فعّل')))return;
-    const w=await sb.rpc('admin_set_comments',{p_on:!on});
-    if(w.error){toast(errMsg(w.error));return}
-    loadCmtState();
-  };
-}
-/* ---------- تبويب الاستهلاك ---------- */
-const UV_FB=n=>{n=+n||0;if(n<1024)return Math.round(n)+' B';if(n<1048576)return (n/1024).toFixed(n<10240?1:0)+' KB';if(n<1073741824)return mbs(n)+' MB';return (n/1073741824).toFixed(2)+' GB'};
-const B=t=>`<bdi>${t}</bdi>`;
-const UV_PCT=p=>p<1?'أقل من 1':String(Math.round(p));
-const uvCol=p=>p>=80?'#C0392B':p>=60?'#B7791F':'var(--s1)';
-function uvMeter(title,used,limit,note,fmt){
-  fmt=fmt||UV_FB;const p=Math.min(100,used/limit*100);
-  const st=p>=80?'⚠ قريب جداً من الحد':p>=60?'⚠ اقتربت من الحد':'';
-  const tip=`${title}: ${fmt(used)} من ${fmt(limit)} (${UV_PCT(p)}%)`;
-  return `<div style="margin:10px 0" data-tip="${esc(tip)}"><div class="uvh"><b>${esc(title)}</b><span><bdi>${fmt(used)}</bdi> من <bdi>${fmt(limit)}</bdi></span></div>
-    <div class="meter" role="img" aria-label="${esc(tip)}"><i style="width:${Math.max(p,.8).toFixed(1)}%;--mc:${uvCol(p)}"></i></div>
-    <div class="st">${ar(UV_PCT(p))}%${st?' · '+st:''}${note?' · '+note:''}</div></div>`;
-}
-/* rows: [{n, sub, v, val, tip}]  v = الرقم للترتيب والطول، val = النص المعروض */
-function uvRank(rows,total){
-  const max=Math.max(1,...rows.map(r=>r.v));
-  return rows.map(r=>{
-    const pc=total>0?Math.round(r.v/total*100):0;
-    const tip=r.tip||`${r.n.replace(/<[^>]+>/g,'')}: ${r.val.replace(/<[^>]+>/g,'')}${total>0?' ('+(pc<1&&r.v>0?'أقل من 1':pc)+'%)':''}`;
-    return `<div class="rk" data-tip="${esc(tip)}"><span class="nm">${r.n}</span><span class="v"><bdi>${r.val}</bdi>${total>0?' · '+(pc<1&&r.v>0?'<bdi dir="ltr">&lt;1%</bdi>':ar(pc)+'%'):''}</span>
-      <div class="tr"><i style="width:${r.v>0?Math.max(r.v/max*100,1.5).toFixed(1):0}%"></i></div>${r.sub?`<span class="sb">${r.sub}</span>`:''}</div>`}).join('');
-}
-function uvSeg(parts){
-  const tot=parts.reduce((a,p)=>a+p.v,0)||1;
-  const bar=parts.filter(p=>p.v>0).map(p=>`<i data-tip="${esc(p.n+': '+UV_FB(p.v)+' ('+Math.round(p.v/tot*100)+'%)')}" style="flex:${p.v} 1 0;background:var(--s${p.s})"></i>`).join('');
-  const lg=parts.map(p=>`<div class="lg" data-tip="${esc(p.n+': '+UV_FB(p.v)+' ('+Math.round(p.v/tot*100)+'%)')}"><span class="dt" style="background:var(--s${p.s})"></span><span class="nm">${p.n}${p.sub?` <span class="v">${p.sub}</span>`:''}</span><span class="v"><bdi>${UV_FB(p.v)}</bdi> · ${ar(Math.round(p.v/tot*100))}%</span></div>`).join('');
-  return `<div class="sgb" role="img" aria-label="توزيع المساحة">${bar}</div>${lg}`;
-}
-function uvTipInit(root){
-  let tip=$('uvtip');if(!tip){tip=document.createElement('div');tip.id='uvtip';tip.className='uvtip';document.body.appendChild(tip)}
-  tip.style.display='none';
-  const show=(el,x,y)=>{tip.textContent=el.dataset.tip;tip.style.display='block';const w=tip.offsetWidth;tip.style.left=Math.min(Math.max(8,x-w/2),innerWidth-w-8)+'px';tip.style.top=Math.max(8,y-tip.offsetHeight-14)+'px'};
-  root.addEventListener('pointermove',e=>{if(e.pointerType==='touch')return;const t=e.target.closest('[data-tip]');if(t)show(t,e.clientX,e.clientY);else tip.style.display='none'});
-  root.addEventListener('pointerleave',()=>{tip.style.display='none'});
-  root.addEventListener('click',e=>{const t=e.target.closest('[data-tip]');if(!t){tip.style.display='none';return}show(t,e.clientX,e.clientY);clearTimeout(tip._t);tip._t=setTimeout(()=>{tip.style.display='none'},3500)});
-}
-const UV_TABLES={questions:'الأسئلة',profiles:'حسابات الطلاب',subscriptions:'الاشتراكات',questions_trash:'سلة المحذوفات',question_stats:'إحصائيات الأسئلة',activity_days:'أيام النشاط',leaderboard:'لوحة الصدارة',question_comment_counts:'عدّاد التعليقات',comment_usage:'استخدام التعليقات',question_reports:'التبليغات',sales:'المبيعات',codes:'الأكواد',announcements:'الإعلانات',question_choices:'اختيارات الأسئلة',referrals:'الإحالات'};
-const UV_BUCKETS={'user-progress':'تقدم الطلاب (النظام القديم)','user-notes':'ملاحظات قديمة','covers':'أغلفة المواد','question-comments':'تعليقات الأسئلة','request-files':'مرفقات الطلبات'};
-async function loadUsageTab(){
-  const root=$('uvroot');if(!root)return;
-  uvTipInit(root);
-  const set=(id,h)=>{const e=$(id);if(e)e.innerHTML=h};
-  const fail=(id,t)=>set(id,`<p class="hint">${t}</p>`);
-  /* 1) قاعدة البيانات */
-  (async()=>{try{
-    const [u,b]=await Promise.all([sb.rpc('admin_db_usage'),sb.rpc('admin_db_breakdown')]);
-    if(u.error)throw u.error;if(b.error)throw b.error;
-    const d=Array.isArray(u.data)?u.data[0]:u.data,total=Number(d.db_bytes),lim=DB_LIMIT_MB*1048576;
-    const tb=(b.data||[]).map(r=>({name:r.name,bytes:Number(r.bytes),n:Number(r.n)})).filter(r=>r.bytes>0);
-    const pub=tb.reduce((a,r)=>a+r.bytes,0),sys=Math.max(0,total-pub);
-    let rows=tb.map(r=>({n:esc(UV_TABLES[r.name]||r.name),sub:`${B(esc(r.name))} · نحو ${B(r.n.toLocaleString('en-US'))} صف`,v:r.bytes,val:UV_FB(r.bytes)}));
-    if(sys>0)rows.push({n:'نظام Supabase (المصادقة والفهارس وغيرها)',v:sys,val:UV_FB(sys)});
-    rows.sort((x,y)=>y.v-x.v);
-    if(rows.length>9){const rest=rows.slice(9),rv=rest.reduce((a,r)=>a+r.v,0);rows=rows.slice(0,9);rows.push({n:`أخرى (${B(rest.length)} بنود)`,v:rv,val:UV_FB(rv),tip:'أخرى: '+rest.map(r=>r.n.replace(/<[^>]+>/g,'')).join('، ')})}
-    set('uvdb',uvMeter('المستهلك من القاعدة',total,lim,'الحد المجاني '+B('500 MB'))+`<h4>توزيع الحجم حسب الجدول</h4>`+uvRank(rows,total)+(total/lim>=.6?'<p class="note">اقتربت من الحد: فكّر بنقل المواد القديمة أو حذف ما لا تحتاجه.</p>':''));
-  }catch(e){fail('uvdb','تعذر قراءة استهلاك القاعدة.')}})();
-  /* 2) تخزين Supabase */
-  (async()=>{try{
-    const r=await sb.rpc('admin_storage_summary');if(r.error)throw r.error;
-    const bk=(r.data||[]).map(x=>({id:x.bucket,n:Number(x.n),bytes:Number(x.bytes)})),total=bk.reduce((a,x)=>a+x.bytes,0);
-    const rows=bk.sort((x,y)=>y.bytes-x.bytes).map(x=>({n:esc(UV_BUCKETS[x.id]||x.id),sub:`${B(esc(x.id))} · ${B(x.n.toLocaleString('en-US'))} ملف${x.n?' · المتوسط '+B(UV_FB(x.bytes/x.n)):''}`,v:x.bytes,val:UV_FB(x.bytes)}));
-    set('uvst',uvMeter('المستهلك من التخزين',total,1073741824,'الحد المجاني '+B('1 GB'))+`<h4>توزيع الحجم حسب المجلد</h4>`+(rows.length?uvRank(rows,total):'<p class="hint">لا توجد ملفات.</p>'));
-  }catch(e){fail('uvst','تعذر قراءة تخزين Supabase.')}})();
-  /* 3) R2 */
-  (async()=>{try{
-    const [im,us]=await Promise.all([r2ListAll('img'),r2ListAll('user')]);
-    if(!$('uvr2'))return;
-    const si=im.reduce((a,o)=>a+o.size,0),su=us.reduce((a,o)=>a+o.size,0),tot=si+su;
-    const kinds={'notes.json.gz':['الملاحظات والتظليل',2],'questions.json.gz':['الأسئلة الخاصة والبطاقات',3],'progress.json.gz':['تقدم الطلاب',4]};
-    const kb={},kn={},per={};
-    us.forEach(o=>{const p=o.key.split('/'),f=p[2]||'',uid=p[1]||'';kb[f]=(kb[f]||0)+o.size;kn[f]=(kn[f]||0)+1;per[uid]=(per[uid]||0)+o.size});
-    const uids=Object.keys(per),stu=uids.length,sorted=uids.map(u=>[u,per[u]]).sort((a,b)=>b[1]-a[1]);
-    const parts=[{n:'صور الأسئلة',v:si,s:1,sub:B(im.length.toLocaleString('en-US'))+' ملف'}].concat(Object.keys(kinds).map(f=>({n:kinds[f][0],v:kb[f]||0,s:kinds[f][1],sub:B((kn[f]||0).toLocaleString('en-US'))+' ملف'})));
-    /* أحجام الصور */
-    const ib=[['أقل من '+B('50 KB'),0,51200],[B('50 KB')+' إلى '+B('200 KB'),51200,204800],[B('200 KB')+' إلى '+B('1 MB'),204800,1048576],['أكبر من '+B('1 MB'),1048576,Infinity]].map(([n,a,z])=>{const g=im.filter(o=>o.size>=a&&o.size<z);return {n,c:g.length,b:g.reduce((x,o)=>x+o.size,0)}});
-    const irows=ib.map(x=>({n:x.n,sub:'الإجمالي '+B(UV_FB(x.b)),v:x.c,val:B(x.c.toLocaleString('en-US'))+' صورة',tip:`${x.n.replace(/<[^>]+>/g,'')}: ${x.c} صورة، ${UV_FB(x.b)}`}));
-    /* أحجام الطلاب */
-    const sb2=[['أقل من '+B('100 KB'),0,102400],[B('100 KB')+' إلى '+B('500 KB'),102400,512000],[B('500 KB')+' إلى '+B('1.5 MB'),512000,1572864],['أكبر من '+B('1.5 MB'),1572864,Infinity]].map(([n,a,z])=>({n,c:sorted.filter(x=>x[1]>=a&&x[1]<z).length}));
-    const srows=sb2.map(x=>({n:x.n,v:x.c,val:B(x.c)+' طالب',tip:`${x.n.replace(/<[^>]+>/g,'')}: ${x.c} طالب`}));
-    const med=stu?sorted[Math.floor(stu/2)][1]:0;
-    /* أثقل الطلاب بالأسماء */
-    const top=sorted.slice(0,5);let names={};
-    try{if(top.length){const q=await sb.from('profiles').select('id,full_name').in('id',top.map(x=>x[0]));(q.data||[]).forEach(p=>{names[p.id]=p.full_name})}}catch(e){}
-    const trows=top.map(([u,v])=>({n:esc(names[u]||('طالب '+u.slice(0,8))),v,val:UV_FB(v),tip:`${names[u]||u}: ${UV_FB(v)}`}));
-    if(!$('uvr2'))return;
-    set('uvr2',uvMeter('المستهلك من R2',tot,10*1073741824,'الحد المجاني '+B('10 GB'))
-      +`<h4>توزيع المساحة</h4>`+uvSeg(parts)
-      +`<h4>أحجام الصور (${B(im.length.toLocaleString('en-US'))} صورة${im.length?'، المتوسط '+B(UV_FB(si/im.length)):''})</h4>`+uvRank(irows,0)
-      +`<h4>بيانات الطلاب (${B(stu)} طالب)</h4>`
-      +(stu?`<p class="cap">المتوسط <bdi>${UV_FB(su/stu)}</bdi> لكل طالب، والوسيط <bdi>${UV_FB(med)}</bdi>، والأكبر <bdi>${UV_FB(sorted[0][1])}</bdi></p>`+uvRank(srows,0)+`<h4>الأثقل بياناتاً</h4>`+uvRank(trows,su):'<p class="hint">لا توجد بيانات طلاب بعد.</p>'));
-    loadCfMetrics();
-  }catch(e){fail('uvr2',esc(e.message||'تعذر قراءة R2.'));const c=$('cfm');if(c)c.textContent=''}})();
-}
-async function loadCfMetrics(){
-  const el=$('cfm');if(!el)return;
-  try{
-    const r=await r2Fetch('/api/admin/metrics');const j=await r.json();
-    if(!$('cfm'))return;
-    if(j.error==='no_token'){el.textContent='لعرض الطلبات والعمليات: أضف السر CF_API_TOKEN إلى الـ Worker في Cloudflare (Settings ثم Variables and Secrets).';return}
-    if(j.error){el.textContent='تعذر قراءة مقاييس Cloudflare: '+(j.detail||j.error);return}
-    const row=(t,v,lim,note)=>uvMeter(t,v,lim,note,n=>n.toLocaleString('en-US'));
-    el.innerHTML='<h4>طلبات وعمليات Cloudflare</h4>'+row('طلبات الـ Worker اليوم',j.workers_today,100000,'يتصفر الساعة 3 فجراً بتوقيت العراق'+(j.workers_errors?'، منها '+ar(j.workers_errors)+' بخطأ':''))
-      +row('عمليات الكتابة في R2 هذا الشهر',j.r2_class_a,1000000,'الحفظ والرفع والقوائم')
-      +row('عمليات القراءة في R2 هذا الشهر',j.r2_class_b,10000000,'تحميل الملفات والصور');
-  }catch(e){if($('cfm'))$('cfm').textContent='تعذر قراءة مقاييس Cloudflare.'}
-}
-/* كاتب ZIP بسيط بدون ضغط (الصور والملفات مضغوطة أصلاً) */
-const CRC_T=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})();
-function crc32(u){let c=0xFFFFFFFF;for(let i=0;i<u.length;i++)c=CRC_T[(c^u[i])&255]^(c>>>8);return (c^0xFFFFFFFF)>>>0}
-function zipNew(){return {parts:[],cen:[],off:0,size:0}}
-function zipAdd(z,name,data){
-  const nb=new TextEncoder().encode(name),d=new Date();
-  const time=(d.getHours()<<11)|(d.getMinutes()<<5)|(d.getSeconds()>>1),date=((d.getFullYear()-1980)<<9)|((d.getMonth()+1)<<5)|d.getDate();
-  const crc=crc32(data),h=new DataView(new ArrayBuffer(30));
-  h.setUint32(0,0x04034b50,true);h.setUint16(4,20,true);h.setUint16(6,0x0800,true);h.setUint16(8,0,true);h.setUint16(10,time,true);h.setUint16(12,date,true);
-  h.setUint32(14,crc,true);h.setUint32(18,data.length,true);h.setUint32(22,data.length,true);h.setUint16(26,nb.length,true);h.setUint16(28,0,true);
-  z.parts.push(h.buffer,nb,data);
-  z.cen.push({nb,crc,len:data.length,off:z.off,time,date});
-  z.off+=30+nb.length+data.length;z.size=z.off;
-}
-function zipBlob(z){
-  const cd=[];let cdSize=0;
-  z.cen.forEach(e=>{
-    const h=new DataView(new ArrayBuffer(46));
-    h.setUint32(0,0x02014b50,true);h.setUint16(4,20,true);h.setUint16(6,20,true);h.setUint16(8,0x0800,true);h.setUint16(10,0,true);h.setUint16(12,e.time,true);h.setUint16(14,e.date,true);
-    h.setUint32(16,e.crc,true);h.setUint32(20,e.len,true);h.setUint32(24,e.len,true);h.setUint16(28,e.nb.length,true);h.setUint32(42,e.off,true);
-    cd.push(h.buffer,e.nb);cdSize+=46+e.nb.length;
-  });
-  const t=new DataView(new ArrayBuffer(22));
-  t.setUint32(0,0x06054b50,true);t.setUint16(8,z.cen.length,true);t.setUint16(10,z.cen.length,true);t.setUint32(12,cdSize,true);t.setUint32(16,z.off,true);
-  return new Blob(z.parts.concat(cd,[t.buffer]),{type:'application/zip'});
-}
-function downloadBlob(name,blob){
-  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;
-  document.body.appendChild(a);a.click();
-  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},60000);
-}
-/* تنظيف: صور لا يستعملها أي سؤال (ولا سلة المحذوفات) + ملفات طلاب لم يعد لهم حساب */
-async function cleanR2(){
-  const say=t=>{const e=$('r2box');if(e)e.textContent=t};
-  try{
-    say('جارٍ فحص الصور وملفات الطلاب…');
-    const [im,us]=await Promise.all([r2ListAll('img'),r2ListAll('user')]);
-    const rf=await sb.rpc('admin_orphan_refs');
-    if(rf.error||!rf.data)throw rf.error||new Error('تعذر قراءة المراجع.');
-    const used=new Set(rf.data.imgs||[]),uids=new Set((rf.data.uids||[]).map(x=>String(x).toLowerCase()));
-    const dayAgo=Date.now()-36e5;
-    const oi=im.filter(o=>!used.has(o.key)&&o.at&&o.at<dayAgo);
-    const stale=new Set((rf.data.stale||[]).map(x=>String(x).toLowerCase()));
-    const ou=new Set(),st=new Set();let ub=0,sb2=0;
-    us.forEach(o=>{const u=o.key.split('/')[1];if(!u)return;const l=u.toLowerCase();
-      if(!uids.has(l)){ou.add(u);ub+=o.size}
-      else if(stale.has(l)){st.add(u);sb2+=o.size}});
-    const ib=oi.reduce((a,o)=>a+o.size,0);
-    if(!oi.length&&!ou.size&&!st.size){say('لا يوجد شيء للتنظيف. كل الصور مستعملة، ولا ملفات لطلاب محذوفين أو انتهى اشتراكهم قبل أكثر من سنة.');return}
-    const ok=await askConfirm('تنظيف R2','سيُحذف نهائياً: '+ar(oi.length)+' صورة يتيمة (<bdi>'+ar(mbs(ib))+' MB</bdi>) وملفات '+ar(ou.size)+' طالب محذوف (<bdi>'+ar(mbs(ub))+' MB</bdi>) وملفات '+ar(st.size)+' طالب انتهى اشتراكه قبل أكثر من سنة (<bdi>'+ar(mbs(sb2))+' MB</bdi>، يبقى حسابهم وتقدمهم ويُحذف فقط ملاحظاتهم وأسئلتهم الخاصة). الصور الأحدث من ساعة وصور سلة المحذوفات لا تُمس. أنصحك بتنزيل نسخة شاملة قبل التنظيف. تتابع؟'.replace(/<\/?bdi[^>]*>/g,''),'احذف');
-    if(!ok){say('');return}
-    let di=0,du=0,fail=0;
-    for(const o of oi){
-      try{await imgCall('DELETE',IMG_API+'?path='+encodeURIComponent(o.key));di++}catch(e){fail++}
-      if((di+fail)%20===0)say('جارٍ الحذف… '+ar(di+fail)+' من '+ar(oi.length));
-    }
-    for(const u of ou){
-      try{await imgCall('DELETE','/api/data?uid='+encodeURIComponent(u));du++}catch(e){fail++}
-    }
-    for(const u of st){   // منتهي الاشتراك: نحذف الملاحظات والأسئلة الخاصة ونُبقي التقدم
-      try{await imgCall('DELETE','/api/data?keep=progress&uid='+encodeURIComponent(u));du++}catch(e){fail++}
-    }
-    say('تم حذف '+ar(di)+' صورة يتيمة وملفات '+ar(du)+' طالب (محذوف أو منتهٍ اشتراكه منذ أكثر من سنة)'+(fail?'، وفشل '+ar(fail)+' (أعد المحاولة)':'')+'.');
-  }catch(e){say(e.message||errMsg(e))}
-}
-async function fullBackup(){
-  const el=$('r2box'),say=t=>{const e=$('r2box');if(e)e.textContent=t};
-  try{
-    say('جارٍ جمع الأسئلة والحسابات…');
-    const [sp,su,sy,qs]=await Promise.all([
-      fetchAll(()=>sb.from('specialties').select('*').order('id')),
-      fetchAll(()=>sb.from('subjects').select('*').order('id')),
-      fetchAll(()=>sb.from('systems').select('*').order('id')),
-      fetchAll(()=>sb.from('questions').select('*').order('id'))]);
-    const ac=await sb.rpc('admin_backup_accounts');
-    if(ac.error)throw ac.error;
-    const tables={};
-    for(const t of BK_TABLES){
-      say('جارٍ جمع الجداول: '+t+'…');
-      let rows=[],from=0;
-      for(;;){
-        const r=await sb.rpc('admin_backup_table',{p_table:t,p_from:from,p_n:5000});
-        if(r.error)throw r.error;
-        const part=r.data||[];rows=rows.concat(part);
-        if(part.length<5000)break;from+=5000;
-      }
-      tables[t]=rows;
-    }
-    say('جارٍ قراءة قائمة الصور وبيانات الطلاب…');
-    const [im,us]=await Promise.all([r2ListAll('img'),r2ListAll('user')]);
-    const files=im.map(o=>({b:'img',key:o.key,size:o.size,name:'images/'+o.key})).concat(us.map(o=>({b:'user',key:o.key,size:o.size,name:'userdata/'+o.key.slice(6)})));
-    for(const [bk,dir] of BK_BUCKETS){
-      const l=await sb.rpc('admin_storage_list',{p_bucket:bk});
-      if(l.error)throw l.error;
-      (l.data||[]).forEach(o=>files.push({sbk:bk,key:o.name,size:Number(o.size)||0,name:dir+'/'+o.name}));
-    }
-    const tot=files.reduce((a,o)=>a+o.size,0),parts=Math.max(1,Math.ceil(tot/PART_BYTES));
-    const ok=await askConfirm('نسخة احتياطية شاملة','ستُنزَّل الجداول (لوحة الصدارة، أيام النشاط، إحصائيات الأسئلة…) و'+ar(files.length)+' ملف (صور، تقدم الطلاب، ملاحظاتهم، أغلفة المواد) بحجم حوالي '+ar(mbs(tot))+' MB، مقسومة إلى حوالي '+ar(parts)+' ملف ZIP. اترك هذه الصفحة مفتوحة حتى ينتهي. هل تتابع؟','ابدأ');
-    if(!ok){say('');return}
-    const day=new Date().toISOString().slice(0,10),failed=[];
-    let z=zipNew(),pn=1;const names=[];
-    const dataJson=new TextEncoder().encode(JSON.stringify({app:'boardcard-full',version:2,exported_at:new Date().toISOString(),note:'بدون كلمات السر. الجداول في tables/، الصور في images/، ملاحظات وأسئلة الطلاب في userdata/، تقدم الطلاب في progress/، أغلفة المواد في covers/.',content:{specialties:sp,subjects:su,systems:sy,questions:qs},accounts:ac.data},null,1));
-    zipAdd(z,'data.json',dataJson);
-    Object.keys(tables).forEach(t=>zipAdd(z,'tables/'+t+'.json',new TextEncoder().encode(JSON.stringify(tables[t]))));
-    const flush=()=>{
-      const nm='boardcard-backup-'+day+'-part'+pn+'.zip';names.push(nm);
-      downloadBlob(nm,zipBlob(z));pn++;z=zipNew();
-      return new Promise(r=>setTimeout(r,1500));
-    };
-    let done=0,i=0;
-    const one=async f=>{
-      for(let t=0;t<2;t++){
-        try{
-          if(f.sbk){
-            const d=await sb.storage.from(f.sbk).download(f.key);
-            if(d.error||!d.data)throw d.error||new Error('x');
-            return new Uint8Array(await d.data.arrayBuffer());
-          }
-          const r=await r2Fetch('/api/admin/get?b='+f.b+'&key='+encodeURIComponent(f.key));
-          if(!r.ok)throw new Error(String(r.status));
-          return new Uint8Array(await r.arrayBuffer());
-        }catch(e){}
-      }
-      return null;
-    };
-    while(i<files.length){
-      const batch=files.slice(i,i+6);i+=6;
-      const res=await Promise.all(batch.map(one));
-      for(let k=0;k<batch.length;k++){
-        if(!res[k]){failed.push(batch[k].key);continue}
-        if(z.size>0&&z.size+res[k].length>PART_BYTES)await flush();
-        zipAdd(z,batch[k].name,res[k]);
-      }
-      done+=batch.length;say('جارٍ التنزيل: '+ar(Math.min(done,files.length))+' من '+ar(files.length)+' ملف…');
-    }
-    if(failed.length)zipAdd(z,'FAILED.txt',new TextEncoder().encode(failed.join('\n')));
-    await flush();
-    try{localStorage.setItem('bc_last_backup',String(Date.now()))}catch(e){}
-    say('انتهت النسخة: '+ar(names.length)+' ملف ZIP'+(failed.length?'، وتعذر تنزيل '+ar(failed.length)+' ملف (مذكورة في FAILED.txt)':'')+'. تأكد أن المتصفح سمح بتنزيل عدة ملفات.');
-  }catch(e){say(e.message||errMsg(e))}
-}
-/* ---------- تبويب الأخطاء ---------- */
-async function loadDevs(){
-  const el=$('dvlist');if(!el)return;
-  const r=await sb.rpc('admin_device_flags',{p_days:7,p_min:3});
-  if(!$('dvlist'))return;
-  if(r.error){el.innerHTML=`<p class="err">${/admin_device_flags|schema cache|does not exist|Could not find/i.test((r.error.message||'')+(r.error.details||''))?'ميزة الأجهزة غير مفعّلة بعد في قاعدة البيانات.':esc(errMsg(r.error))}</p>`;return}
-  const rows=r.data||[];
-  el.innerHTML=rows.length?rows.map((x,i)=>`<div class="item" style="--sc:${x.blocked?'#B93A32':'#C77A00'}"><div class="grow">
-      <div class="nm">${esc(x.full_name||x.username||'')}${x.blocked?' <span class="lock">موقوف</span>':''}</div>
-      <div class="sub"><bdi dir="ltr">${esc(x.username||'')}</bdi> · ${ar(x.devs)} أجهزة مختلفة · آخر دخول ${fdate(x.last_seen)}</div>
-      <div class="sub">${x.phone?'الهاتف: '+phoneHtml(x.phone):'لا يوجد رقم هاتف لهذا الحساب. أضفه من تبويب الطلاب ثم «تعديل».'}</div>
-    </div><div class="acts2"><button class="ib" data-dvr="${i}">تصفير</button><button class="ib del" data-dvb="${i}">${x.blocked?'فك الحظر':'حظر'}</button></div></div>`).join('')
-    :'<div class="empty">لا توجد حسابات بأجهزة متعددة حالياً.</div>';
-  el.querySelectorAll('[data-dvr]').forEach(b=>b.onclick=async()=>{
-    const x=rows[+b.dataset.dvr];
-    if(!(await askConfirm('تصفير عدّاد الأجهزة','سيبدأ عدّ أجهزة «'+(x.full_name||x.username)+'» من الصفر. استعمل هذا بعد أن تنبّه الطالب.','صفّر')))return;
-    const d=await sb.rpc('admin_devices_reset',{p_user:x.id});
-    if(d.error){toast(errMsg(d.error));return}
-    loadDevs();
-  });
-  el.querySelectorAll('[data-dvb]').forEach(b=>b.onclick=async()=>{
-    const x=rows[+b.dataset.dvb],to=!x.blocked;
-    if(!(await askConfirm(to?'حظر الحساب':'فك الحظر',(to?'سيُوقف حساب «':'سيُفتح حساب «')+(x.full_name||x.username)+'».',to?'احظر':'افتح')))return;
-    const d=await sb.rpc('admin_set_blocked',{p_user:x.id,p_blocked:to});
-    if(d.error){toast(errMsg(d.error));return}
-    loadDevs();
-  });
-}
-async function loadAudit(){
-  const el=$('aulist');if(!el)return;
-  const r=await sb.rpc('admin_audit_list',{p_limit:200});
-  if(!$('aulist'))return;
-  if(r.error){el.innerHTML=`<p class="err">${/admin_audit_list|schema cache|does not exist|Could not find/i.test((r.error.message||'')+(r.error.details||''))?'سجل التدقيق غير مفعّل بعد في قاعدة البيانات.':esc(errMsg(r.error))}</p>`;return}
-  const rows=r.data||[];
-  const TB={subscriptions:'اشتراك',activation_codes:'كود تفعيل'},OP={INSERT:'إضافة',UPDATE:'تعديل',DELETE:'حذف'};
-  el.innerHTML=rows.length?rows.map(x=>`<div class="item" style="--sc:#5A6B77;align-items:flex-start"><div class="grow">
-      <div class="nm">${esc(OP[x.op]||x.op)} · ${esc(TB[x.tbl]||x.tbl)}</div>
-      <div class="sub">${fdate(x.at)} ${ar(new Date(x.at).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}))} · بواسطة <bdi dir="ltr">${esc(x.actor_name||'—')}</bdi></div>
-      <details><summary class="sub" style="cursor:pointer">التفاصيل</summary><pre dir="ltr" style="white-space:pre-wrap;word-break:break-all;font-size:11px;margin:6px 0 0">${esc(JSON.stringify(x.diff,null,1))}</pre></details>
-    </div></div>`).join(''):'<div class="empty">لا توجد تغييرات مسجلة بعد.</div>';
-}
-async function loadErrors(){
-  const el=$('erlist');if(!el)return;
-  const r=await sb.rpc('admin_errors');
-  if(!$('erlist'))return;
-  if(r.error){
-    const miss=/admin_errors|schema cache|does not exist|Could not find/i.test((r.error.message||'')+(r.error.details||''));
-    el.innerHTML=`<p class="err">${miss?'لم يُنشأ جدول الأخطاء بعد. شغّل ملف client_errors.sql في Supabase (SQL Editor) مرة واحدة.':esc(errMsg(r.error))}</p>`;
-    return;
-  }
-  const rows=r.data||[];
-  const dev=u=>{u=String(u||'');
-    const os=/iPhone|iPad/.test(u)?'iPhone/iPad':/Android/.test(u)?'Android':/Windows/.test(u)?'Windows':/Mac OS/.test(u)?'Mac':'جهاز آخر';
-    const br=/Edg\//.test(u)?'Edge':/CriOS|Chrome/.test(u)?'Chrome':/FxiOS|Firefox/.test(u)?'Firefox':/Safari/.test(u)?'Safari':'';
-    return os+(br?' · '+br:'')};
-  el.innerHTML=rows.length?rows.map((x,i)=>`<div class="item" style="--sc:#B93A32;align-items:flex-start"><div class="grow">
-      <div class="nm" dir="auto" style="text-align:start;word-break:break-word">${esc(x.msg)}</div>
-      <div class="sub">${ar(x.n)} مرة · آخرها ${fdate(x.last_at)} الساعة ${ar(new Date(x.last_at).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}))}</div>
-      <div class="sub">الشاشة: ${esc(x.view||'—')} · ${esc(dev(x.ua))} · إصدار <bdi dir="ltr">${esc(x.ver||'—')}</bdi></div>
-      <div class="sub" dir="ltr" style="text-align:start;word-break:break-all">${esc(x.src||'')}</div>
-      ${x.stack?`<details><summary class="sub" style="cursor:pointer">التفاصيل التقنية</summary><pre dir="ltr" style="white-space:pre-wrap;word-break:break-all;font-size:11px;margin:6px 0 0">${esc(x.stack)}</pre></details>`:''}
-    </div><div class="acts2"><button class="ib" data-erd="${i}">حذف</button></div></div>`).join('')
-    :'<div class="empty">لا توجد أخطاء مسجلة.</div>';
-  el.querySelectorAll('[data-erd]').forEach(b=>b.onclick=async()=>{
-    const x=rows[+b.dataset.erd];
-    const d=await sb.rpc('admin_error_delete',{p_id:x.id});
-    if(d.error){toast(errMsg(d.error));return}
-    loadErrors();
-  });
-}
-/* ---------- تبويب الأرقام ---------- */
-async function loadStats(){
-  const el=$('stbox');if(!el)return;
-  const r=await sb.rpc('admin_stats',{p_min:5});
-  if(!$('stbox'))return;
-  if(r.error||!r.data){el.innerHTML=`<p class="err">${esc(errMsg(r.error))}</p>`;return}
-  const d=r.data;
-  const kpi=(n,l,s)=>`<div class="kpi"><b>${n}</b><span>${l}</span>${s?`<small>${s}</small>`:''}</div>`;
-  const pct=(a,b)=>b?ar(Math.round(100*a/b))+'%':'—';
-  const rn=d.renew||{cohort:0,renewed:0};
-  const mo=d.months||[];
-  const money=v=>ar(Math.round(v).toLocaleString('en-US'))+' د';
-  const MN=['','كانون الثاني','شباط','آذار','نيسان','أيار','حزيران','تموز','آب','أيلول','تشرين الأول','تشرين الثاني','كانون الأول'];
-  const mname=m=>MN[+m.slice(5)]+' '+ar(m.slice(0,4));
-  el.innerHTML=`
+      <button class="btn block" id="asv">\u0646\u0634\u0631 \u0627\u0644\u0625\u0639\u0644\u0627\u0646</button>`)+`
+      <h3 class="sec">\u0627\u0644\u0625\u0639\u0644\u0627\u0646\u0627\u062A \u0627\u0644\u0633\u0627\u0628\u0642\u0629</h3><div id="annlist"><p class="hint">\u062C\u0627\u0631\u064D \u0627\u0644\u062A\u062D\u0645\u064A\u0644\u2026</p></div>`}else a=`<button class="btn block" id="newStu">+ \u062D\u0633\u0627\u0628 \u0637\u0627\u0644\u0628 \u062C\u062F\u064A\u062F</button><button class="btn line block" id="chkRef" style="margin-top:8px">\u{1F50E} \u0627\u0644\u062A\u062D\u0642\u0642 \u0645\u0646 \u0643\u0648\u062F \u0625\u062D\u0627\u0644\u0629 (\u0644\u062A\u062D\u062F\u064A\u062F \u0627\u0644\u062E\u0635\u0645)</button><button class="btn line block" id="expU" style="margin-top:8px">\u2B07 \u062A\u0635\u062F\u064A\u0631 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0637\u0644\u0627\u0628 (CSV)</button><input class="in" id="fu" placeholder="\u0628\u062D\u062B \u0628\u0627\u0644\u0627\u0633\u0645 \u0623\u0648 \u0627\u0633\u0645 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645" value="${esc(A.fu)}" style="margin:12px 0 8px"><div class="seg" role="group" aria-label="\u062A\u0635\u0641\u064A\u0629" style="margin:0 0 12px"><button data-fx="all" aria-pressed="${A.fx==="all"}">\u0627\u0644\u0643\u0644</button><button data-fx="soon" aria-pressed="${A.fx==="soon"}">\u064A\u0646\u062A\u0647\u064A \u062E\u0644\u0627\u0644 7 \u0623\u064A\u0627\u0645</button><button data-fx="ended" aria-pressed="${A.fx==="ended"}">\u0645\u0646\u062A\u0647\u064A</button></div><div id="ulist"><p class="hint">\u062C\u0627\u0631\u064D \u0627\u0644\u062A\u062D\u0645\u064A\u0644\u2026</p></div>`;app.innerHTML=`
+  <div class="top"><div class="brand">\u0644\u0648\u062D\u0629 \u0627\u0644\u062A\u062D\u0643\u0645<small>${ar(Store.specialties.length)} \u0627\u062E\u062A\u0635\u0627\u0635\u060C ${ar(Store.subjects.length)} \u0645\u0627\u062F\u0629\u060C ${ar(cntTotal())} \u0633\u0624\u0627\u0644</small></div>
+    <button class="pill" id="out">\u062A\u0633\u062C\u064A\u0644 \u0627\u0644\u062E\u0631\u0648\u062C</button></div>
+  <div class="seg tabs" role="group" aria-label="\u0627\u0644\u0642\u0633\u0645" style="margin-top:0">
+    <button data-t="stats" aria-pressed="${A.tab==="stats"}">\u0627\u0644\u0623\u0631\u0642\u0627\u0645</button>
+    <button data-t="usage" aria-pressed="${A.tab==="usage"}">\u0627\u0644\u0627\u0633\u062A\u0647\u0644\u0627\u0643</button>
+    <button data-t="specs" aria-pressed="${A.tab==="specs"}">\u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635\u0627\u062A</button>
+    <button data-t="subjects" aria-pressed="${A.tab==="subjects"}">\u0627\u0644\u0645\u0648\u0627\u062F</button>
+    <button data-t="questions" aria-pressed="${A.tab==="questions"}">\u0627\u0644\u0623\u0633\u0626\u0644\u0629</button>
+    <button data-t="codes" aria-pressed="${A.tab==="codes"}">\u0627\u0644\u0623\u0643\u0648\u0627\u062F</button>
+    <button data-t="users" aria-pressed="${A.tab==="users"}">\u0627\u0644\u0637\u0644\u0627\u0628</button>
+    <button data-t="inbox" aria-pressed="${A.tab==="inbox"}">\u0627\u0644\u062A\u0628\u0644\u064A\u063A\u0627\u062A \u0648\u0627\u0644\u0637\u0644\u0628\u0627\u062A</button>
+    <button data-t="ann" aria-pressed="${A.tab==="ann"}">\u0627\u0644\u0625\u0639\u0644\u0627\u0646\u0627\u062A</button>
+    <button data-t="lb" aria-pressed="${A.tab==="lb"}">\u0644\u0648\u062D\u0629 \u0627\u0644\u0634\u0631\u0641</button>
+    <button data-t="trash" aria-pressed="${A.tab==="trash"}">\u0627\u0644\u0645\u062D\u0630\u0648\u0641\u0627\u062A</button>
+    <button data-t="errors" aria-pressed="${A.tab==="errors"}">\u0627\u0644\u0623\u062E\u0637\u0627\u0621</button>
+    <button data-t="dev" aria-pressed="${A.tab==="dev"}">\u0627\u0644\u0623\u062C\u0647\u0632\u0629</button>
+    <button data-t="audit" aria-pressed="${A.tab==="audit"}">\u0627\u0644\u0633\u062C\u0644</button></div>
+  ${backupBanner()}${a}`;{const n=app.querySelector(".tabs");if(n){e!==null&&(n.scrollLeft=e);const i=n.querySelector('[aria-pressed="true"]');if(i){const l=i.getBoundingClientRect(),o=n.getBoundingClientRect();(l.left<o.left+8||l.right>o.right-8)&&i.scrollIntoView({inline:"center",block:"nearest"})}}}$("out").onclick=adminLogout,inboxBadge(),app.querySelectorAll("[data-t]").forEach(n=>n.onclick=()=>{A.tab=n.dataset.t,admin()}),A.tab==="specs"?($("addP").onclick=()=>entityForm("specialties"),app.querySelectorAll("[data-ep]").forEach(n=>n.onclick=()=>entityForm("specialties",n.dataset.ep)),app.querySelectorAll("[data-dp]").forEach(n=>n.onclick=()=>deleteEntity("specialties",n.dataset.dp))):A.tab==="subjects"?($("addS").onclick=()=>entityForm("subjects"),$("fsp").onchange=n=>{A.fsp=n.target.value,admin()},app.querySelectorAll("[data-es]").forEach(n=>n.onclick=()=>entityForm("subjects",n.dataset.es)),app.querySelectorAll("[data-ds]").forEach(n=>n.onclick=()=>deleteEntity("subjects",n.dataset.ds)),app.querySelectorAll("[data-ys]").forEach(n=>n.onclick=()=>systemsSheet(n.dataset.ys))):A.tab==="questions"?($("addQ").onclick=()=>questionForm(),loadUsage(),$("bulk").onclick=bulkForm,$("bkc").onclick=()=>exportBackup("csv"),$("bkf").onclick=fullBackup,$("r2st").onclick=()=>{A.tab="usage",admin()},$("r2cl").onclick=cleanR2,loadCmtState(),$("sus").onclick=suspectAnswers,loadBackupInfo(),$("fs").onchange=n=>{A.fs=n.target.value,A.qn=60,qList()},$("fq").oninput=n=>{A.fq=n.target.value.trim(),A.qn=60,clearTimeout(qList.t),qList.t=setTimeout(()=>qList(),300)},qList()):A.tab==="codes"?($("mk").onclick=makeCodes,bindPriceChips(),loadCodes()):A.tab==="inbox"?(app.querySelectorAll("[data-ib]").forEach(n=>n.onclick=()=>{A.ib=n.dataset.ib,admin()}),A.ib==="reqs"?(app.querySelectorAll("[data-qs]").forEach(n=>n.onclick=()=>{A.qs=n.dataset.qs,admin()}),loadRequests()):(app.querySelectorAll("[data-rs]").forEach(n=>n.onclick=()=>{A.rs=n.dataset.rs,admin()}),loadReports())):A.tab==="usage"?($("uvrf").onclick=()=>{loadUsageTab()},loadUsageTab()):A.tab==="stats"?loadStats():A.tab==="dev"?($("dvl").onclick=()=>loadDevs(),loadDevs()):A.tab==="audit"?($("aul").onclick=()=>loadAudit(),loadAudit()):A.tab==="errors"?($("erl").onclick=()=>loadErrors(),$("erc").onclick=async()=>{if(!await askConfirm("\u0645\u0633\u062D \u0643\u0644 \u0627\u0644\u0623\u062E\u0637\u0627\u0621","\u0633\u062A\u064F\u062D\u0630\u0641 \u062C\u0645\u064A\u0639 \u0627\u0644\u0623\u062E\u0637\u0627\u0621 \u0627\u0644\u0645\u0633\u062C\u0644\u0629. \u0625\u0646 \u062A\u0643\u0631\u0631\u062A \u0633\u062A\u0638\u0647\u0631 \u0645\u0646 \u062C\u062F\u064A\u062F.","\u0627\u0645\u0633\u062D"))return;const n=await sb.rpc("admin_errors_clear");if(n.error){toast(errMsg(n.error));return}loadErrors()},loadErrors()):A.tab==="trash"?loadTrash():A.tab==="lb"?loadLb():A.tab==="ann"?(app.querySelectorAll("[data-am]").forEach(n=>n.onclick=()=>{A.am=n.dataset.am,admin()}),bindAudience(),A.am==="sponsor"?(bindSponsorForm(),$("spsv").onclick=publishSponsor):$("asv").onclick=publishAnn,loadAnn()):($("newStu").onclick=createStudentForm,$("chkRef").onclick=checkRefForm,$("expU").onclick=exportUsers,$("fu").oninput=n=>{A.fu=n.target.value.trim().toLowerCase(),A.un=40,renderUsers()},app.querySelectorAll("[data-fx]").forEach(n=>n.onclick=()=>{A.fx=n.dataset.fx,A.un=40,admin()}),loadUsers())}const RLABEL={wrong_answer:"\u0627\u0644\u062C\u0648\u0627\u0628 \u0627\u0644\u0635\u062D\u064A\u062D \u063A\u064A\u0631 \u0635\u062D\u064A\u062D",explanation:"\u0627\u0644\u0634\u0631\u062D \u062E\u0627\u0637\u0626 \u0623\u0648 \u0646\u0627\u0642\u0635",typo:"\u062E\u0637\u0623 \u0625\u0645\u0644\u0627\u0626\u064A \u0623\u0648 \u0644\u063A\u0648\u064A",unclear:"\u0627\u0644\u0633\u0624\u0627\u0644 \u0623\u0648 \u0627\u0644\u062E\u064A\u0627\u0631\u0627\u062A \u063A\u064A\u0631 \u0648\u0627\u0636\u062D\u0629",other:"\u0633\u0628\u0628 \u0622\u062E\u0631"};async function loadRequests(){if(!$("rqlist"))return;const e=A.qs==="done",s=await sb.from("subject_requests").select("*").eq("status",e?"done":"new").order("created_at",{ascending:!1}).limit(100);if(!$("rqlist"))return;if(s.error){$("rqlist").innerHTML=`<p class="err">${esc(errMsg(s.error))}</p>`;return}const a=s.data;if(!a.length){$("rqlist").innerHTML=`<div class="empty">${e?"\u0644\u0627 \u062A\u0648\u062C\u062F \u0637\u0644\u0628\u0627\u062A \u0645\u0646\u062C\u0632\u0629.":"\u0644\u0627 \u062A\u0648\u062C\u062F \u0637\u0644\u0628\u0627\u062A \u062C\u062F\u064A\u062F\u0629."}</div>`;return}const n=[...new Set(a.map(c=>c.user_id))],i=await sb.from("profiles").select("id,full_name,username").in("id",n),l={};if((i.data||[]).forEach(c=>{l[c.id]=c}),!$("rqlist"))return;$("rqlist").innerHTML=a.map(c=>{const p=l[c.user_id]||{},d=spById(c.specialty_id);return`<div class="item" style="--sc:${safeC(d.c)};align-items:flex-start"><div class="grow">
+      <div class="nm">${esc(c.subject_name||"")}</div>
+      <div class="sub">${esc(d.n)}\u060C ${esc(p.full_name||p.username||"")}${p.username?" (@"+esc(p.username)+")":""}\u060C ${fdate(c.created_at)}</div>
+      ${c.note?`<div class="sub" dir="auto" style="color:var(--ink)">${esc(c.note)}</div>`:""}
+      <div class="sub" dir="auto">${esc(c.file_name||"")}</div>
+      <div class="acts3"><button class="ib" data-rqd="${esc(c.id)}">\u062A\u0646\u0632\u064A\u0644 \u0627\u0644\u0645\u0644\u0641</button><button class="ib" data-rqv="${esc(c.id)}">${e?"\u0625\u0639\u0627\u062F\u0629 \u0641\u062A\u062D":"\u062A\u0645 \u0627\u0644\u0625\u0646\u062C\u0627\u0632"}</button><button class="ib del" data-rqx="${esc(c.id)}">\u062D\u0630\u0641</button></div></div></div>`}).join("");const o={};a.forEach(c=>{o[c.id]=c}),$("rqlist").querySelectorAll("[data-rqd]").forEach(c=>c.onclick=async()=>{const p=o[c.dataset.rqd],d=await sb.storage.from("request-files").createSignedUrl(p.file_path,300,{download:p.file_name||!0});if(d.error){toast(errMsg(d.error));return}window.open(d.data.signedUrl,"_blank")}),$("rqlist").querySelectorAll("[data-rqv]").forEach(c=>c.onclick=async()=>{const p=await sb.from("subject_requests").update({status:e?"new":"done"}).eq("id",c.dataset.rqv);if(p.error){toast(errMsg(p.error));return}admin()}),$("rqlist").querySelectorAll("[data-rqx]").forEach(c=>c.onclick=async()=>{const p=o[c.dataset.rqx];if(!await askConfirm("\u062D\u0630\u0641 \u0627\u0644\u0637\u0644\u0628","\u0633\u064A\u064F\u062D\u0630\u0641 \u0627\u0644\u0637\u0644\u0628 \u0645\u0639 \u0627\u0644\u0645\u0644\u0641 \u0627\u0644\u0645\u0631\u0641\u0642 \u0646\u0647\u0627\u0626\u064A\u0627\u064B.","\u0627\u062D\u0630\u0641"))return;try{await sb.storage.from("request-files").remove([p.file_path])}catch{}const d=await sb.from("subject_requests").delete().eq("id",p.id);if(d.error){toast(errMsg(d.error));return}toast("\u062A\u0645 \u0627\u0644\u062D\u0630\u0641"),admin()})}async function inboxBadge(){try{const[t,e]=await Promise.all([sb.from("subject_requests").select("id",{count:"exact",head:!0}).eq("status","new"),sb.from("question_reports").select("id",{count:"exact",head:!0}).eq("status","open")]),s=t.error?0:t.count||0,a=e.error?0:e.count||0,n=app.querySelector('[data-t="inbox"]');n&&s+a>0&&(n.textContent="\u0627\u0644\u062A\u0628\u0644\u064A\u063A\u0627\u062A \u0648\u0627\u0644\u0637\u0644\u0628\u0627\u062A ("+(s+a)+")");const i=$("ibr"),l=$("ibq");i&&a>0&&(i.textContent="\u062A\u0628\u0644\u064A\u063A\u0627\u062A \u0639\u0646 \u0623\u0633\u0626\u0644\u0629 ("+a+")"),l&&s>0&&(l.textContent="\u0637\u0644\u0628\u0627\u062A \u0627\u0644\u0645\u0648\u0627\u062F ("+s+")")}catch{}}async function loadReports(){if(!$("rplist"))return;const e=await sb.from("question_reports").select("*").eq("status",A.rs).order("created_at",{ascending:!1}).limit(100);if(!$("rplist"))return;if(e.error){$("rplist").innerHTML=`<p class="err">${esc(errMsg(e.error))}</p>`;return}const s=e.data;if(!s.length){$("rplist").innerHTML=`<div class="empty">${A.rs==="open"?"\u0644\u0627 \u062A\u0648\u062C\u062F \u062A\u0628\u0644\u064A\u063A\u0627\u062A \u0645\u0641\u062A\u0648\u062D\u0629. \u0645\u0645\u062A\u0627\u0632.":"\u0644\u0627 \u062A\u0648\u062C\u062F \u062A\u0628\u0644\u064A\u063A\u0627\u062A \u0645\u062D\u0644\u0648\u0644\u0629 \u0628\u0639\u062F."}</div>`;return}const a=[...new Set(s.map(p=>p.question_id))],n=[...new Set(s.map(p=>p.user_id))],[i,l]=await Promise.all([sb.from("questions").select("*").in("id",a),sb.from("profiles").select("id,full_name,username").in("id",n)]),o={},c={};(i.data||[]).forEach(p=>{o[p.id]=p}),(l.data||[]).forEach(p=>{c[p.id]=p}),QL=i.data||[],$("rplist")&&($("rplist").innerHTML=s.map(p=>{const d=o[p.question_id],b=c[p.user_id]||{},r=d?subjOf(d.s):{n:"",c:"#5A6B77"};return`<div class="item" style="--sc:${safeC(r.c)};align-items:flex-start"><div class="grow">
+      <div class="qt" dir="${d?dirOf(d.q):"rtl"}">${d?esc(d.q):"\u0633\u0624\u0627\u0644 \u0645\u062D\u0630\u0648\u0641"}</div>
+      <div class="sub"><b>${esc(RLABEL[p.reason]||p.reason)}</b></div>
+      ${p.note?`<div class="sub" dir="auto" style="color:var(--ink)">${esc(p.note)}</div>`:""}
+      <div class="sub">${esc(b.full_name||b.username||"")}${b.username?" (@"+esc(b.username)+")":""}\u060C ${fdate(p.created_at)}\u060C ${esc(r.n)}</div>
+      <div class="acts3">${d?`<button class="ib" data-oq="${esc(d.id)}">\u0641\u062A\u062D \u0627\u0644\u0633\u0624\u0627\u0644</button>`:""}<button class="ib" data-rv="${esc(p.id)}">${A.rs==="open"?"\u062A\u0645 \u0627\u0644\u062D\u0644":"\u0625\u0639\u0627\u062F\u0629 \u0641\u062A\u062D"}</button><button class="ib del" data-rd="${esc(p.id)}">\u062D\u0630\u0641</button></div></div></div>`}).join(""),$("rplist").querySelectorAll("[data-oq]").forEach(p=>p.onclick=()=>questionForm(p.dataset.oq)),$("rplist").querySelectorAll("[data-rv]").forEach(p=>p.onclick=async()=>{const d=await sb.from("question_reports").update({status:A.rs==="open"?"resolved":"open"}).eq("id",p.dataset.rv);if(d.error){toast(errMsg(d.error));return}toast(A.rs==="open"?"\u062A\u0645 \u062A\u062D\u062F\u064A\u062F \u0627\u0644\u062A\u0628\u0644\u064A\u063A \u0643\u0645\u062D\u0644\u0648\u0644":"\u0623\u064F\u0639\u064A\u062F \u0641\u062A\u062D \u0627\u0644\u062A\u0628\u0644\u064A\u063A"),admin()}),$("rplist").querySelectorAll("[data-rd]").forEach(p=>p.onclick=async()=>{if(!await askConfirm("\u062D\u0630\u0641 \u0627\u0644\u062A\u0628\u0644\u064A\u063A","\u0633\u064A\u064F\u062D\u0630\u0641 \u0647\u0630\u0627 \u0627\u0644\u062A\u0628\u0644\u064A\u063A \u0646\u0647\u0627\u0626\u064A\u0627\u064B.","\u0627\u062D\u0630\u0641"))return;const d=await sb.from("question_reports").delete().eq("id",p.dataset.rd);if(d.error){toast(errMsg(d.error));return}toast("\u062A\u0645 \u062D\u0630\u0641 \u0627\u0644\u062A\u0628\u0644\u064A\u063A"),admin()}))}function audienceHtml(){return`<div class="fld"><span>\u0644\u0645\u0646 \u064A\u0638\u0647\u0631\u061F (\u064A\u0645\u0643\u0646 \u0627\u062E\u062A\u064A\u0627\u0631 \u0623\u0643\u062B\u0631 \u0645\u0646 \u0641\u0626\u0629)</span>
+    <label class="chk"><input type="checkbox" id="aud-all" checked><span>\u0643\u0644 \u0627\u0644\u0637\u0644\u0627\u0628 \u0648\u0627\u0644\u0632\u0648\u0627\u0631</span></label>
+    ${Store.specialties.map(t=>`<label class="chk" style="margin-top:0"><input type="checkbox" data-aud="${esc(t.id)}"><span>\u0645\u0634\u062A\u0631\u0643\u0648 ${esc(t.n)} \u0641\u0642\u0637</span></label>`).join("")}</div>`}function bindAudience(){const t=$("aud-all");if(!t)return;const e=()=>Array.from(document.querySelectorAll("[data-aud]"));t.onchange=()=>{t.checked?e().forEach(s=>{s.checked=!1}):e().some(s=>s.checked)||(t.checked=!0)},e().forEach(s=>s.onchange=()=>{s.checked?t.checked=!1:e().some(a=>a.checked)||(t.checked=!0)})}const readAudience=()=>Array.from(document.querySelectorAll("[data-aud]:checked")).map(t=>t.dataset.aud),audText=t=>{const e=t.sp_ids&&t.sp_ids.length?t.sp_ids:t.specialty_id?[t.specialty_id]:[];return e.length?"\u0645\u0634\u062A\u0631\u0643\u0648 "+e.map(s=>spById(s).n).join("\u060C "):"\u0643\u0644 \u0627\u0644\u0637\u0644\u0627\u0628 \u0648\u0627\u0644\u0632\u0648\u0627\u0631"};async function publishAnn(){const t=$("am").value.trim(),e=parseInt($("ad").value,10)||0;if(!t){$("er").textContent="\u0627\u0643\u062A\u0628 \u0646\u0635 \u0627\u0644\u0625\u0639\u0644\u0627\u0646.";return}$("asv").disabled=!0;const s={message:t,kind:"ann",sp_ids:readAudience()};e>0&&(s.ends_at=new Date(Date.now()+e*864e5).toISOString());const a=await sb.from("announcements").insert(s);if(a.error){$("er").textContent=errMsg(a.error),$("asv").disabled=!1;return}toast("\u062A\u0645 \u0646\u0634\u0631 \u0627\u0644\u0625\u0639\u0644\u0627\u0646"),admin()}let SPBLOB=null;function bindSponsorForm(){SPBLOB=null,$("spb").onclick=()=>$("spf").click(),$("spf").onchange=async t=>{const e=t.target.files[0];if(e)try{SPBLOB=await squareJpeg(e,320),$("spp").innerHTML=`<img class="cov" style="width:80px;height:80px" src="${URL.createObjectURL(SPBLOB)}" alt="">`}catch(s){toast(errMsg(s))}},$("spr").onclick=()=>{SPBLOB=null,$("spf").value="",$("spp").innerHTML='<div class="cvph">\u0628\u062F\u0648\u0646 \u0635\u0648\u0631\u0629</div>'}}const dayStart=t=>{const e=t.split("-");return new Date(+e[0],+e[1]-1,+e[2],0,0,0)},dayEnd=t=>{const e=t.split("-");return new Date(+e[0],+e[1]-1,+e[2],23,59,59)};async function publishSponsor(){const t=$("spn").value.trim(),e=$("spm").value.trim(),s=$("spl").value.trim(),a=$("spc").value.trim()||"\u0627\u0646\u062A\u0642\u0644 \u0627\u0644\u0622\u0646",n=$("sps").value,i=$("spe").value,l=$("er");if(!t){l.textContent="\u0627\u0643\u062A\u0628 \u0627\u0633\u0645 \u0627\u0644\u0631\u0627\u0639\u064A.";return}if(!e){l.textContent="\u0627\u0643\u062A\u0628 \u0646\u0635 \u0627\u0644\u0625\u0639\u0644\u0627\u0646.";return}let o=/^https?:\/\/\S+$/i.test(s);try{o&&new URL(s)}catch{o=!1}if(!o){l.textContent="\u0627\u0643\u062A\u0628 \u0631\u0627\u0628\u0637\u0627\u064B \u0635\u062D\u064A\u062D\u0627\u064B \u064A\u0628\u062F\u0623 \u0628\u0640 https://";return}if(!i){l.textContent="\u0627\u062E\u062A\u0631 \u062A\u0627\u0631\u064A\u062E \u0627\u0646\u062A\u0647\u0627\u0621 \u0627\u0644\u0625\u0639\u0644\u0627\u0646.";return}const c=dayEnd(i),p=n?dayStart(n):null;if(c<=new Date){l.textContent="\u062A\u0627\u0631\u064A\u062E \u0627\u0644\u0627\u0646\u062A\u0647\u0627\u0621 \u064A\u062C\u0628 \u0623\u0646 \u064A\u0643\u0648\u0646 \u0627\u0644\u064A\u0648\u0645 \u0623\u0648 \u0628\u0639\u062F\u0647.";return}if(p&&p>=c){l.textContent="\u062A\u0627\u0631\u064A\u062E \u0627\u0644\u0628\u062F\u0627\u064A\u0629 \u064A\u062C\u0628 \u0623\u0646 \u064A\u0633\u0628\u0642 \u062A\u0627\u0631\u064A\u062E \u0627\u0644\u0627\u0646\u062A\u0647\u0627\u0621.";return}l.textContent="",$("spsv").disabled=!0;const d=crypto.randomUUID&&crypto.randomUUID()||null,b={kind:"sponsor",message:e,sponsor_name:t,link_url:s,cta:a,sp_ids:readAudience(),ends_at:c.toISOString()};d&&(b.id=d),p&&(b.starts_at=p.toISOString());let r=null;try{if(SPBLOB){r="ads/"+(d||Date.now())+"-"+Date.now()+".jpg";const f=await sb.storage.from("covers").upload(r,SPBLOB,{contentType:"image/jpeg",upsert:!0});if(f.error)throw f.error;b.image_url=sb.storage.from("covers").getPublicUrl(r).data.publicUrl}const u=await sb.from("announcements").insert(b);if(u.error){if(r)try{await sb.storage.from("covers").remove([r])}catch{}throw u.error}toast("\u062A\u0645 \u0646\u0634\u0631 \u0627\u0644\u0625\u0639\u0644\u0627\u0646 \u0627\u0644\u0645\u0645\u0648\u0644"),admin()}catch(u){l.textContent=errMsg(u),$("spsv").disabled=!1}}async function loadAnn(){const t=await sb.from("announcements").select("*").order("created_at",{ascending:!1}).limit(50),e=$("annlist");if(!e)return;if(t.error){e.innerHTML=`<p class="err">${esc(errMsg(t.error))}</p>`;return}const s=t.data.filter(i=>i.kind==="sponsor").map(i=>i.id),a={};if(s.length){const i=await sb.from("ad_stats").select("*").in("ad_id",s),l=new Date(Date.now()-6*864e5).toISOString().slice(0,10);(i.data||[]).forEach(o=>{const c=a[o.ad_id]||(a[o.ad_id]={v:0,c:0,v7:0,c7:0});c.v+=o.v,c.c+=o.c,o.day>=l&&(c.v7+=o.v,c.c7+=o.c)})}if(!$("annlist"))return;const n=Date.now();e.innerHTML=t.data.length?t.data.map(i=>{const l=i.ends_at&&new Date(i.ends_at).getTime()<=n,o=i.starts_at&&new Date(i.starts_at).getTime()>n,c=i.active&&!l&&!o,p=c?"\u0638\u0627\u0647\u0631":i.active?l?"\u0627\u0646\u062A\u0647\u0649":"\u0645\u062C\u062F\u0648\u0644":"\u0645\u0648\u0642\u0648\u0641",d=i.kind==="sponsor",b=a[i.id]||{v:0,c:0,v7:0,c7:0},r=d?`<div class="sub" style="margin-top:4px">\u{1F4CA} \u0645\u0634\u0627\u0647\u062F\u0627\u062A <b>${ar(b.v)}</b>\u060C \u0636\u063A\u0637\u0627\u062A <b>${ar(b.c)}</b>${b.v?"\u060C \u0646\u0633\u0628\u0629 \u0627\u0644\u0636\u063A\u0637 <b>"+ar((100*b.c/b.v).toFixed(1))+"%</b>":""} \xB7 \u0622\u062E\u0631 7 \u0623\u064A\u0627\u0645: ${ar(b.v7)} \u0645\u0634\u0627\u0647\u062F\u0629\u060C ${ar(b.c7)} \u0636\u063A\u0637\u0629</div><div class="sub" dir="ltr" style="text-align:start;word-break:break-all">${esc(i.link_url||"")}</div>`:"";return`<div class="item" style="--sc:${c?d?"#B7791F":"#1F5FBF":"#5A6B77"};align-items:flex-start"><div class="grow">${d?`<div class="sub"><b>\u{1F3F7} \u0645\u0645\u0648\u0644: ${esc(i.sponsor_name||"")}</b></div>`:""}<div class="qt" dir="${dirOf(i.message)}">${esc(i.message)}</div>
+      <div class="sub"><b>${esc(audText(i))}</b>\u060C <b style="color:${c?"#1F5FBF":"#B93A32"}">${p}</b>\u060C \u0646\u064F\u0634\u0631 ${fdate(i.created_at)}${i.starts_at&&o?"\u060C \u064A\u0628\u062F\u0623 "+fdate(i.starts_at):""}${i.ends_at&&!l?"\u060C \u064A\u0646\u062A\u0647\u064A "+fdate(i.ends_at):""}</div>${r}
+      <div class="acts3"><button class="ib ${i.active?"del":""}" data-at="${esc(i.id)}" data-on="${i.active?1:0}">${i.active?"\u0625\u064A\u0642\u0627\u0641 \u0627\u0644\u0625\u0639\u0644\u0627\u0646":"\u0625\u0639\u0627\u062F\u0629 \u0627\u0644\u062A\u0641\u0639\u064A\u0644"}</button><button class="ib del" data-ad="${esc(i.id)}">\u062D\u0630\u0641</button></div></div></div>`}).join(""):'<div class="empty">\u0644\u0627 \u062A\u0648\u062C\u062F \u0625\u0639\u0644\u0627\u0646\u0627\u062A \u0628\u0639\u062F.</div>',e.querySelectorAll("[data-at]").forEach(i=>i.onclick=async()=>{const l=await sb.from("announcements").update({active:i.dataset.on!=="1"}).eq("id",i.dataset.at);if(l.error){toast(errMsg(l.error));return}toast(i.dataset.on==="1"?"\u062A\u0645 \u0625\u064A\u0642\u0627\u0641 \u0627\u0644\u0625\u0639\u0644\u0627\u0646":"\u062A\u0645\u062A \u0625\u0639\u0627\u062F\u0629 \u062A\u0641\u0639\u064A\u0644 \u0627\u0644\u0625\u0639\u0644\u0627\u0646"),loadAnn()}),e.querySelectorAll("[data-ad]").forEach(i=>i.onclick=async()=>{if(!await askConfirm("\u062D\u0630\u0641 \u0627\u0644\u0625\u0639\u0644\u0627\u0646","\u0633\u064A\u064F\u062D\u0630\u0641 \u0647\u0630\u0627 \u0627\u0644\u0625\u0639\u0644\u0627\u0646 \u0646\u0647\u0627\u0626\u064A\u0627\u064B \u0645\u0639 \u0625\u062D\u0635\u0627\u0626\u064A\u0627\u062A\u0647.","\u0627\u062D\u0630\u0641"))return;const l=t.data.find(p=>p.id===i.dataset.ad),o=l&&covPath(l.image_url),c=await sb.from("announcements").delete().eq("id",i.dataset.ad);if(c.error){toast(errMsg(c.error));return}if(o)try{await sb.storage.from("covers").remove([o])}catch{}toast("\u062A\u0645 \u062D\u0630\u0641 \u0627\u0644\u0625\u0639\u0644\u0627\u0646"),loadAnn()})}function downloadFile(t,e,s){const a=new Blob([e],{type:s}),n=document.createElement("a");n.href=URL.createObjectURL(a),n.download=t,document.body.appendChild(n),n.click(),setTimeout(()=>{URL.revokeObjectURL(n.href),n.remove()},1500)}function backupBanner(){let t=0;try{t=+localStorage.getItem("bc_last_backup")||0}catch{}const e=t?Math.floor((Date.now()-t)/864e5):null;return e!==null&&e<7?"":`<div class="banner" style="display:flex;gap:8px;align-items:center;justify-content:space-between"><span>${e===null?"\u0644\u0645 \u062A\u0646\u0632\u0651\u0644 \u0646\u0633\u062E\u0629 \u0643\u0627\u0645\u0644\u0629 \u0639\u0644\u0649 \u062C\u0647\u0627\u0632\u0643 \u0628\u0639\u062F.":"\u0622\u062E\u0631 \u0646\u0633\u062E\u0629 \u0643\u0627\u0645\u0644\u0629 \u0646\u0632\u0651\u0644\u062A\u0647\u0627 \u0642\u0628\u0644 "+ar(e)+" \u064A\u0648\u0645\u0627\u064B."} \u0627\u0644\u0646\u0633\u062E\u0629 \u0627\u0644\u062A\u0644\u0642\u0627\u0626\u064A\u0629 \u062A\u0628\u0642\u0649 \u062F\u0627\u062E\u0644 Supabase \u0646\u0641\u0633\u0647\u060C \u0641\u0627\u062D\u062A\u0641\u0638 \u0628\u0646\u0633\u062E\u0629 \u0639\u0644\u0649 \u062C\u0647\u0627\u0632\u0643.</span><button class="pill" data-t="questions">\u0646\u0632\u0651\u0644 \u0627\u0644\u0622\u0646</button></div>`}async function loadBackupInfo(){const t=$("bkinfo");if(!t)return;let e=0;try{e=+localStorage.getItem("bc_last_backup")||0}catch{}const s=await sb.rpc("admin_snapshots");if(!$("bkinfo"))return;const a=s.error?[]:s.data||[];t.innerHTML="\u0622\u062E\u0631 \u0646\u0633\u062E\u0629 \u0646\u0632\u0651\u0644\u062A\u0647\u0627: "+(e?fdate(e):"\u0644\u0645 \u062A\u0646\u0632\u0651\u0644 \u0628\u0639\u062F")+". "+(a.length?"\u0646\u0633\u062E\u0629 \u062A\u0644\u0642\u0627\u0626\u064A\u0629 \u0623\u0633\u0628\u0648\u0639\u064A\u0629 \u0644\u0644\u062D\u0633\u0627\u0628\u0627\u062A \u0648\u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643\u0627\u062A \u0648\u0627\u0644\u0623\u0643\u0648\u0627\u062F (\u0643\u0644 \u0623\u062D\u062F)\u060C \u0622\u062E\u0631\u0647\u0627 "+fdate(a[0].at)+"\u060C \u0648\u0645\u062D\u0641\u0648\u0638 \u0645\u0646\u0647\u0627 "+ar(a.length)+'. <button class="pill" id="snapdl">\u062A\u0646\u0632\u064A\u0644 \u0622\u062E\u0631 \u0646\u0633\u062E\u0629 \u062A\u0644\u0642\u0627\u0626\u064A\u0629</button>':"")+"<br>\u0643\u0644\u0645\u0627\u062A \u0627\u0644\u0633\u0631 \u0644\u0627 \u062A\u062F\u062E\u0644 \u0641\u064A \u0623\u064A \u0646\u0633\u062E\u0629.";const n=$("snapdl");n&&(n.onclick=async()=>{const i=await sb.rpc("admin_snapshot_get",{p_id:a[0].id});if(i.error||!i.data){toast(errMsg(i.error));return}downloadFile("boardcard-accounts-snapshot-"+new Date(a[0].at).toISOString().slice(0,10)+".json",JSON.stringify(i.data,null,1),"application/json")})}const R2_LIMIT_GB=10,PART_BYTES=200*1048576,BK_TABLES=["leaderboard","activity_days","question_stats","league_members","challenges","challenge_results","live_exams","live_results","daily_sets","referrals","sales","partners","announcements","question_reports","question_choices","q_seen","q_quota","lb_config","lb_bots","app_config","ai_usage","ai_chat_usage","ad_stats","subject_requests","question_deletions","questions_trash","subjects_trash","ai_explanations"],BK_BUCKETS=[["question-comments","comments"],["user-progress","progress"],["user-notes","legacy-notes"],["covers","covers"]];async function r2Fetch(t){const e=(await sb.auth.getSession()).data.session;if(!e)throw new Error("\u0627\u0646\u062A\u0647\u062A \u0627\u0644\u062C\u0644\u0633\u0629\u060C \u0633\u062C\u0651\u0644 \u0627\u0644\u062F\u062E\u0648\u0644 \u0645\u0646 \u062C\u062F\u064A\u062F.");return fetch(t,{headers:{Authorization:"Bearer "+e.access_token}})}async function r2ListAll(t,e){let s=null,a=[];do{const n=await r2Fetch("/api/admin/list?b="+t+(s?"&cursor="+encodeURIComponent(s):""));if(!n.ok)throw new Error(n.status===403?"\u0645\u0627 \u0639\u0646\u062F\u0643 \u0635\u0644\u0627\u062D\u064A\u0629.":"\u062A\u0639\u0630\u0631 \u0642\u0631\u0627\u0621\u0629 \u0627\u0644\u0645\u0644\u0641\u0627\u062A \u0645\u0646 R2. \u062A\u0623\u0643\u062F \u0645\u0646 \u0631\u0641\u0639 \u0622\u062E\u0631 \u0646\u0633\u062E\u0629 \u0645\u0646 worker.js.");const i=await n.json();a=a.concat(i.objects||[]),s=i.cursor,e&&e(a.length)}while(s);return a}const mbs=t=>{const e=t/1048576;return e<10?e.toFixed(1):Math.round(e)};async function loadCmtState(){const t=$("cmtb");if(!t)return;const e=await sb.rpc("admin_comments_state");if(!$("cmtb"))return;if(e.error){t.textContent="\u{1F4AC} \u0627\u0644\u062A\u0639\u0644\u064A\u0642\u0627\u062A: \u062A\u0639\u0630\u0631 \u0642\u0631\u0627\u0621\u0629 \u0627\u0644\u062D\u0627\u0644\u0629";return}const s=!!e.data;t.textContent=s?"\u{1F4AC} \u0627\u0644\u062A\u0639\u0644\u064A\u0642\u0627\u062A \u0645\u0641\u0639\u0651\u0644\u0629 (\u0627\u0636\u063A\u0637 \u0644\u0625\u064A\u0642\u0627\u0641 \u0627\u0644\u0625\u0636\u0627\u0641\u0629)":"\u{1F4AC} \u0627\u0644\u062A\u0639\u0644\u064A\u0642\u0627\u062A \u0645\u0648\u0642\u0648\u0641\u0629 (\u0627\u0636\u063A\u0637 \u0644\u062A\u0641\u0639\u064A\u0644\u0647\u0627)",t.onclick=async()=>{if(!await askConfirm(s?"\u0625\u064A\u0642\u0627\u0641 \u0627\u0644\u062A\u0639\u0644\u064A\u0642\u0627\u062A":"\u062A\u0641\u0639\u064A\u0644 \u0627\u0644\u062A\u0639\u0644\u064A\u0642\u0627\u062A",s?"\u0633\u064A\u062A\u0648\u0642\u0641 \u0627\u0644\u0637\u0644\u0627\u0628 \u0639\u0646 \u0625\u0636\u0627\u0641\u0629 \u062A\u0639\u0644\u064A\u0642\u0627\u062A \u062C\u062F\u064A\u062F\u0629\u060C \u0648\u064A\u0628\u0642\u0649 \u0627\u0644\u0646\u0642\u0627\u0634 \u0627\u0644\u0645\u0648\u062C\u0648\u062F \u0638\u0627\u0647\u0631\u0627\u064B.":"\u0633\u064A\u0633\u062A\u0637\u064A\u0639 \u0627\u0644\u0637\u0644\u0627\u0628 \u0625\u0636\u0627\u0641\u0629 \u0627\u0644\u062A\u0639\u0644\u064A\u0642\u0627\u062A \u0645\u0646 \u062C\u062F\u064A\u062F.",s?"\u0623\u0648\u0642\u0641":"\u0641\u0639\u0651\u0644"))return;const n=await sb.rpc("admin_set_comments",{p_on:!s});if(n.error){toast(errMsg(n.error));return}loadCmtState()}}const UV_FB=t=>(t=+t||0,t<1024?Math.round(t)+" B":t<1048576?(t/1024).toFixed(t<10240?1:0)+" KB":t<1073741824?mbs(t)+" MB":(t/1073741824).toFixed(2)+" GB"),B=t=>`<bdi>${t}</bdi>`,UV_PCT=t=>t<1?"\u0623\u0642\u0644 \u0645\u0646 1":String(Math.round(t)),uvCol=t=>t>=80?"#C0392B":t>=60?"#B7791F":"var(--s1)";function uvMeter(t,e,s,a,n){n=n||UV_FB;const i=Math.min(100,e/s*100),l=i>=80?"\u26A0 \u0642\u0631\u064A\u0628 \u062C\u062F\u0627\u064B \u0645\u0646 \u0627\u0644\u062D\u062F":i>=60?"\u26A0 \u0627\u0642\u062A\u0631\u0628\u062A \u0645\u0646 \u0627\u0644\u062D\u062F":"",o=`${t}: ${n(e)} \u0645\u0646 ${n(s)} (${UV_PCT(i)}%)`;return`<div style="margin:10px 0" data-tip="${esc(o)}"><div class="uvh"><b>${esc(t)}</b><span><bdi>${n(e)}</bdi> \u0645\u0646 <bdi>${n(s)}</bdi></span></div>
+    <div class="meter" role="img" aria-label="${esc(o)}"><i style="width:${Math.max(i,.8).toFixed(1)}%;--mc:${uvCol(i)}"></i></div>
+    <div class="st">${ar(UV_PCT(i))}%${l?" \xB7 "+l:""}${a?" \xB7 "+a:""}</div></div>`}function uvRank(t,e){const s=Math.max(1,...t.map(a=>a.v));return t.map(a=>{const n=e>0?Math.round(a.v/e*100):0,i=a.tip||`${a.n.replace(/<[^>]+>/g,"")}: ${a.val.replace(/<[^>]+>/g,"")}${e>0?" ("+(n<1&&a.v>0?"\u0623\u0642\u0644 \u0645\u0646 1":n)+"%)":""}`;return`<div class="rk" data-tip="${esc(i)}"><span class="nm">${a.n}</span><span class="v"><bdi>${a.val}</bdi>${e>0?" \xB7 "+(n<1&&a.v>0?'<bdi dir="ltr">&lt;1%</bdi>':ar(n)+"%"):""}</span>
+      <div class="tr"><i style="width:${a.v>0?Math.max(a.v/s*100,1.5).toFixed(1):0}%"></i></div>${a.sub?`<span class="sb">${a.sub}</span>`:""}</div>`}).join("")}function uvSeg(t){const e=t.reduce((n,i)=>n+i.v,0)||1,s=t.filter(n=>n.v>0).map(n=>`<i data-tip="${esc(n.n+": "+UV_FB(n.v)+" ("+Math.round(n.v/e*100)+"%)")}" style="flex:${n.v} 1 0;background:var(--s${n.s})"></i>`).join(""),a=t.map(n=>`<div class="lg" data-tip="${esc(n.n+": "+UV_FB(n.v)+" ("+Math.round(n.v/e*100)+"%)")}"><span class="dt" style="background:var(--s${n.s})"></span><span class="nm">${n.n}${n.sub?` <span class="v">${n.sub}</span>`:""}</span><span class="v"><bdi>${UV_FB(n.v)}</bdi> \xB7 ${ar(Math.round(n.v/e*100))}%</span></div>`).join("");return`<div class="sgb" role="img" aria-label="\u062A\u0648\u0632\u064A\u0639 \u0627\u0644\u0645\u0633\u0627\u062D\u0629">${s}</div>${a}`}function uvTipInit(t){let e=$("uvtip");e||(e=document.createElement("div"),e.id="uvtip",e.className="uvtip",document.body.appendChild(e)),e.style.display="none";const s=(a,n,i)=>{e.textContent=a.dataset.tip,e.style.display="block";const l=e.offsetWidth;e.style.left=Math.min(Math.max(8,n-l/2),innerWidth-l-8)+"px",e.style.top=Math.max(8,i-e.offsetHeight-14)+"px"};t.addEventListener("pointermove",a=>{if(a.pointerType==="touch")return;const n=a.target.closest("[data-tip]");n?s(n,a.clientX,a.clientY):e.style.display="none"}),t.addEventListener("pointerleave",()=>{e.style.display="none"}),t.addEventListener("click",a=>{const n=a.target.closest("[data-tip]");if(!n){e.style.display="none";return}s(n,a.clientX,a.clientY),clearTimeout(e._t),e._t=setTimeout(()=>{e.style.display="none"},3500)})}const UV_TABLES={questions:"\u0627\u0644\u0623\u0633\u0626\u0644\u0629",profiles:"\u062D\u0633\u0627\u0628\u0627\u062A \u0627\u0644\u0637\u0644\u0627\u0628",subscriptions:"\u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643\u0627\u062A",questions_trash:"\u0633\u0644\u0629 \u0627\u0644\u0645\u062D\u0630\u0648\u0641\u0627\u062A",question_stats:"\u0625\u062D\u0635\u0627\u0626\u064A\u0627\u062A \u0627\u0644\u0623\u0633\u0626\u0644\u0629",activity_days:"\u0623\u064A\u0627\u0645 \u0627\u0644\u0646\u0634\u0627\u0637",leaderboard:"\u0644\u0648\u062D\u0629 \u0627\u0644\u0635\u062F\u0627\u0631\u0629",question_comment_counts:"\u0639\u062F\u0651\u0627\u062F \u0627\u0644\u062A\u0639\u0644\u064A\u0642\u0627\u062A",comment_usage:"\u0627\u0633\u062A\u062E\u062F\u0627\u0645 \u0627\u0644\u062A\u0639\u0644\u064A\u0642\u0627\u062A",question_reports:"\u0627\u0644\u062A\u0628\u0644\u064A\u063A\u0627\u062A",sales:"\u0627\u0644\u0645\u0628\u064A\u0639\u0627\u062A",codes:"\u0627\u0644\u0623\u0643\u0648\u0627\u062F",announcements:"\u0627\u0644\u0625\u0639\u0644\u0627\u0646\u0627\u062A",question_choices:"\u0627\u062E\u062A\u064A\u0627\u0631\u0627\u062A \u0627\u0644\u0623\u0633\u0626\u0644\u0629",referrals:"\u0627\u0644\u0625\u062D\u0627\u0644\u0627\u062A"},UV_BUCKETS={"user-progress":"\u062A\u0642\u062F\u0645 \u0627\u0644\u0637\u0644\u0627\u0628 (\u0627\u0644\u0646\u0638\u0627\u0645 \u0627\u0644\u0642\u062F\u064A\u0645)","user-notes":"\u0645\u0644\u0627\u062D\u0638\u0627\u062A \u0642\u062F\u064A\u0645\u0629",covers:"\u0623\u063A\u0644\u0641\u0629 \u0627\u0644\u0645\u0648\u0627\u062F","question-comments":"\u062A\u0639\u0644\u064A\u0642\u0627\u062A \u0627\u0644\u0623\u0633\u0626\u0644\u0629","request-files":"\u0645\u0631\u0641\u0642\u0627\u062A \u0627\u0644\u0637\u0644\u0628\u0627\u062A"};async function loadUsageTab(){const t=$("uvroot");if(!t)return;uvTipInit(t);const e=(a,n)=>{const i=$(a);i&&(i.innerHTML=n)},s=(a,n)=>e(a,`<p class="hint">${n}</p>`);(async()=>{try{const[a,n]=await Promise.all([sb.rpc("admin_db_usage"),sb.rpc("admin_db_breakdown")]);if(a.error)throw a.error;if(n.error)throw n.error;const i=Array.isArray(a.data)?a.data[0]:a.data,l=Number(i.db_bytes),o=DB_LIMIT_MB*1048576,c=(n.data||[]).map(r=>({name:r.name,bytes:Number(r.bytes),n:Number(r.n)})).filter(r=>r.bytes>0),p=c.reduce((r,u)=>r+u.bytes,0),d=Math.max(0,l-p);let b=c.map(r=>({n:esc(UV_TABLES[r.name]||r.name),sub:`${B(esc(r.name))} \xB7 \u0646\u062D\u0648 ${B(r.n.toLocaleString("en-US"))} \u0635\u0641`,v:r.bytes,val:UV_FB(r.bytes)}));if(d>0&&b.push({n:"\u0646\u0638\u0627\u0645 Supabase (\u0627\u0644\u0645\u0635\u0627\u062F\u0642\u0629 \u0648\u0627\u0644\u0641\u0647\u0627\u0631\u0633 \u0648\u063A\u064A\u0631\u0647\u0627)",v:d,val:UV_FB(d)}),b.sort((r,u)=>u.v-r.v),b.length>9){const r=b.slice(9),u=r.reduce((f,m)=>f+m.v,0);b=b.slice(0,9),b.push({n:`\u0623\u062E\u0631\u0649 (${B(r.length)} \u0628\u0646\u0648\u062F)`,v:u,val:UV_FB(u),tip:"\u0623\u062E\u0631\u0649: "+r.map(f=>f.n.replace(/<[^>]+>/g,"")).join("\u060C ")})}e("uvdb",uvMeter("\u0627\u0644\u0645\u0633\u062A\u0647\u0644\u0643 \u0645\u0646 \u0627\u0644\u0642\u0627\u0639\u062F\u0629",l,o,"\u0627\u0644\u062D\u062F \u0627\u0644\u0645\u062C\u0627\u0646\u064A "+B("500 MB"))+"<h4>\u062A\u0648\u0632\u064A\u0639 \u0627\u0644\u062D\u062C\u0645 \u062D\u0633\u0628 \u0627\u0644\u062C\u062F\u0648\u0644</h4>"+uvRank(b,l)+(l/o>=.6?'<p class="note">\u0627\u0642\u062A\u0631\u0628\u062A \u0645\u0646 \u0627\u0644\u062D\u062F: \u0641\u0643\u0651\u0631 \u0628\u0646\u0642\u0644 \u0627\u0644\u0645\u0648\u0627\u062F \u0627\u0644\u0642\u062F\u064A\u0645\u0629 \u0623\u0648 \u062D\u0630\u0641 \u0645\u0627 \u0644\u0627 \u062A\u062D\u062A\u0627\u062C\u0647.</p>':""))}catch{s("uvdb","\u062A\u0639\u0630\u0631 \u0642\u0631\u0627\u0621\u0629 \u0627\u0633\u062A\u0647\u0644\u0627\u0643 \u0627\u0644\u0642\u0627\u0639\u062F\u0629.")}})(),(async()=>{try{const a=await sb.rpc("admin_storage_summary");if(a.error)throw a.error;const n=(a.data||[]).map(o=>({id:o.bucket,n:Number(o.n),bytes:Number(o.bytes)})),i=n.reduce((o,c)=>o+c.bytes,0),l=n.sort((o,c)=>c.bytes-o.bytes).map(o=>({n:esc(UV_BUCKETS[o.id]||o.id),sub:`${B(esc(o.id))} \xB7 ${B(o.n.toLocaleString("en-US"))} \u0645\u0644\u0641${o.n?" \xB7 \u0627\u0644\u0645\u062A\u0648\u0633\u0637 "+B(UV_FB(o.bytes/o.n)):""}`,v:o.bytes,val:UV_FB(o.bytes)}));e("uvst",uvMeter("\u0627\u0644\u0645\u0633\u062A\u0647\u0644\u0643 \u0645\u0646 \u0627\u0644\u062A\u062E\u0632\u064A\u0646",i,1073741824,"\u0627\u0644\u062D\u062F \u0627\u0644\u0645\u062C\u0627\u0646\u064A "+B("1 GB"))+"<h4>\u062A\u0648\u0632\u064A\u0639 \u0627\u0644\u062D\u062C\u0645 \u062D\u0633\u0628 \u0627\u0644\u0645\u062C\u0644\u062F</h4>"+(l.length?uvRank(l,i):'<p class="hint">\u0644\u0627 \u062A\u0648\u062C\u062F \u0645\u0644\u0641\u0627\u062A.</p>'))}catch{s("uvst","\u062A\u0639\u0630\u0631 \u0642\u0631\u0627\u0621\u0629 \u062A\u062E\u0632\u064A\u0646 Supabase.")}})(),(async()=>{try{const[a,n]=await Promise.all([r2ListAll("img"),r2ListAll("user")]);if(!$("uvr2"))return;const i=a.reduce((v,g)=>v+g.size,0),l=n.reduce((v,g)=>v+g.size,0),o=i+l,c={"notes.json.gz":["\u0627\u0644\u0645\u0644\u0627\u062D\u0638\u0627\u062A \u0648\u0627\u0644\u062A\u0638\u0644\u064A\u0644",2],"questions.json.gz":["\u0627\u0644\u0623\u0633\u0626\u0644\u0629 \u0627\u0644\u062E\u0627\u0635\u0629 \u0648\u0627\u0644\u0628\u0637\u0627\u0642\u0627\u062A",3],"progress.json.gz":["\u062A\u0642\u062F\u0645 \u0627\u0644\u0637\u0644\u0627\u0628",4]},p={},d={},b={};n.forEach(v=>{const g=v.key.split("/"),k=g[2]||"",w=g[1]||"";p[k]=(p[k]||0)+v.size,d[k]=(d[k]||0)+1,b[w]=(b[w]||0)+v.size});const r=Object.keys(b),u=r.length,f=r.map(v=>[v,b[v]]).sort((v,g)=>g[1]-v[1]),m=[{n:"\u0635\u0648\u0631 \u0627\u0644\u0623\u0633\u0626\u0644\u0629",v:i,s:1,sub:B(a.length.toLocaleString("en-US"))+" \u0645\u0644\u0641"}].concat(Object.keys(c).map(v=>({n:c[v][0],v:p[v]||0,s:c[v][1],sub:B((d[v]||0).toLocaleString("en-US"))+" \u0645\u0644\u0641"}))),y=[["\u0623\u0642\u0644 \u0645\u0646 "+B("50 KB"),0,51200],[B("50 KB")+" \u0625\u0644\u0649 "+B("200 KB"),51200,204800],[B("200 KB")+" \u0625\u0644\u0649 "+B("1 MB"),204800,1048576],["\u0623\u0643\u0628\u0631 \u0645\u0646 "+B("1 MB"),1048576,1/0]].map(([v,g,k])=>{const w=a.filter(C=>C.size>=g&&C.size<k);return{n:v,c:w.length,b:w.reduce((C,E)=>C+E.size,0)}}).map(v=>({n:v.n,sub:"\u0627\u0644\u0625\u062C\u0645\u0627\u0644\u064A "+B(UV_FB(v.b)),v:v.c,val:B(v.c.toLocaleString("en-US"))+" \u0635\u0648\u0631\u0629",tip:`${v.n.replace(/<[^>]+>/g,"")}: ${v.c} \u0635\u0648\u0631\u0629\u060C ${UV_FB(v.b)}`})),S=[["\u0623\u0642\u0644 \u0645\u0646 "+B("100 KB"),0,102400],[B("100 KB")+" \u0625\u0644\u0649 "+B("500 KB"),102400,512e3],[B("500 KB")+" \u0625\u0644\u0649 "+B("1.5 MB"),512e3,1572864],["\u0623\u0643\u0628\u0631 \u0645\u0646 "+B("1.5 MB"),1572864,1/0]].map(([v,g,k])=>({n:v,c:f.filter(w=>w[1]>=g&&w[1]<k).length})).map(v=>({n:v.n,v:v.c,val:B(v.c)+" \u0637\u0627\u0644\u0628",tip:`${v.n.replace(/<[^>]+>/g,"")}: ${v.c} \u0637\u0627\u0644\u0628`})),x=u?f[Math.floor(u/2)][1]:0,q=f.slice(0,5);let M={};try{q.length&&((await sb.from("profiles").select("id,full_name").in("id",q.map(g=>g[0]))).data||[]).forEach(g=>{M[g.id]=g.full_name})}catch{}const L=q.map(([v,g])=>({n:esc(M[v]||"\u0637\u0627\u0644\u0628 "+v.slice(0,8)),v:g,val:UV_FB(g),tip:`${M[v]||v}: ${UV_FB(g)}`}));if(!$("uvr2"))return;e("uvr2",uvMeter("\u0627\u0644\u0645\u0633\u062A\u0647\u0644\u0643 \u0645\u0646 R2",o,10*1073741824,"\u0627\u0644\u062D\u062F \u0627\u0644\u0645\u062C\u0627\u0646\u064A "+B("10 GB"))+"<h4>\u062A\u0648\u0632\u064A\u0639 \u0627\u0644\u0645\u0633\u0627\u062D\u0629</h4>"+uvSeg(m)+`<h4>\u0623\u062D\u062C\u0627\u0645 \u0627\u0644\u0635\u0648\u0631 (${B(a.length.toLocaleString("en-US"))} \u0635\u0648\u0631\u0629${a.length?"\u060C \u0627\u0644\u0645\u062A\u0648\u0633\u0637 "+B(UV_FB(i/a.length)):""})</h4>`+uvRank(y,0)+`<h4>\u0628\u064A\u0627\u0646\u0627\u062A \u0627\u0644\u0637\u0644\u0627\u0628 (${B(u)} \u0637\u0627\u0644\u0628)</h4>`+(u?`<p class="cap">\u0627\u0644\u0645\u062A\u0648\u0633\u0637 <bdi>${UV_FB(l/u)}</bdi> \u0644\u0643\u0644 \u0637\u0627\u0644\u0628\u060C \u0648\u0627\u0644\u0648\u0633\u064A\u0637 <bdi>${UV_FB(x)}</bdi>\u060C \u0648\u0627\u0644\u0623\u0643\u0628\u0631 <bdi>${UV_FB(f[0][1])}</bdi></p>`+uvRank(S,0)+"<h4>\u0627\u0644\u0623\u062B\u0642\u0644 \u0628\u064A\u0627\u0646\u0627\u062A\u0627\u064B</h4>"+uvRank(L,l):'<p class="hint">\u0644\u0627 \u062A\u0648\u062C\u062F \u0628\u064A\u0627\u0646\u0627\u062A \u0637\u0644\u0627\u0628 \u0628\u0639\u062F.</p>')),loadCfMetrics()}catch(a){s("uvr2",esc(a.message||"\u062A\u0639\u0630\u0631 \u0642\u0631\u0627\u0621\u0629 R2."));const n=$("cfm");n&&(n.textContent="")}})()}async function loadCfMetrics(){const t=$("cfm");if(t)try{const s=await(await r2Fetch("/api/admin/metrics")).json();if(!$("cfm"))return;if(s.error==="no_token"){t.textContent="\u0644\u0639\u0631\u0636 \u0627\u0644\u0637\u0644\u0628\u0627\u062A \u0648\u0627\u0644\u0639\u0645\u0644\u064A\u0627\u062A: \u0623\u0636\u0641 \u0627\u0644\u0633\u0631 CF_API_TOKEN \u0625\u0644\u0649 \u0627\u0644\u0640 Worker \u0641\u064A Cloudflare (Settings \u062B\u0645 Variables and Secrets).";return}if(s.error){t.textContent="\u062A\u0639\u0630\u0631 \u0642\u0631\u0627\u0621\u0629 \u0645\u0642\u0627\u064A\u064A\u0633 Cloudflare: "+(s.detail||s.error);return}const a=(n,i,l,o)=>uvMeter(n,i,l,o,c=>c.toLocaleString("en-US"));t.innerHTML="<h4>\u0637\u0644\u0628\u0627\u062A \u0648\u0639\u0645\u0644\u064A\u0627\u062A Cloudflare</h4>"+a("\u0637\u0644\u0628\u0627\u062A \u0627\u0644\u0640 Worker \u0627\u0644\u064A\u0648\u0645",s.workers_today,1e5,"\u064A\u062A\u0635\u0641\u0631 \u0627\u0644\u0633\u0627\u0639\u0629 3 \u0641\u062C\u0631\u0627\u064B \u0628\u062A\u0648\u0642\u064A\u062A \u0627\u0644\u0639\u0631\u0627\u0642"+(s.workers_errors?"\u060C \u0645\u0646\u0647\u0627 "+ar(s.workers_errors)+" \u0628\u062E\u0637\u0623":""))+a("\u0639\u0645\u0644\u064A\u0627\u062A \u0627\u0644\u0643\u062A\u0627\u0628\u0629 \u0641\u064A R2 \u0647\u0630\u0627 \u0627\u0644\u0634\u0647\u0631",s.r2_class_a,1e6,"\u0627\u0644\u062D\u0641\u0638 \u0648\u0627\u0644\u0631\u0641\u0639 \u0648\u0627\u0644\u0642\u0648\u0627\u0626\u0645")+a("\u0639\u0645\u0644\u064A\u0627\u062A \u0627\u0644\u0642\u0631\u0627\u0621\u0629 \u0641\u064A R2 \u0647\u0630\u0627 \u0627\u0644\u0634\u0647\u0631",s.r2_class_b,1e7,"\u062A\u062D\u0645\u064A\u0644 \u0627\u0644\u0645\u0644\u0641\u0627\u062A \u0648\u0627\u0644\u0635\u0648\u0631")}catch{$("cfm")&&($("cfm").textContent="\u062A\u0639\u0630\u0631 \u0642\u0631\u0627\u0621\u0629 \u0645\u0642\u0627\u064A\u064A\u0633 Cloudflare.")}}const CRC_T=(()=>{const t=new Uint32Array(256);for(let e=0;e<256;e++){let s=e;for(let a=0;a<8;a++)s=s&1?3988292384^s>>>1:s>>>1;t[e]=s>>>0}return t})();function crc32(t){let e=4294967295;for(let s=0;s<t.length;s++)e=CRC_T[(e^t[s])&255]^e>>>8;return(e^4294967295)>>>0}function zipNew(){return{parts:[],cen:[],off:0,size:0}}function zipAdd(t,e,s){const a=new TextEncoder().encode(e),n=new Date,i=n.getHours()<<11|n.getMinutes()<<5|n.getSeconds()>>1,l=n.getFullYear()-1980<<9|n.getMonth()+1<<5|n.getDate(),o=crc32(s),c=new DataView(new ArrayBuffer(30));c.setUint32(0,67324752,!0),c.setUint16(4,20,!0),c.setUint16(6,2048,!0),c.setUint16(8,0,!0),c.setUint16(10,i,!0),c.setUint16(12,l,!0),c.setUint32(14,o,!0),c.setUint32(18,s.length,!0),c.setUint32(22,s.length,!0),c.setUint16(26,a.length,!0),c.setUint16(28,0,!0),t.parts.push(c.buffer,a,s),t.cen.push({nb:a,crc:o,len:s.length,off:t.off,time:i,date:l}),t.off+=30+a.length+s.length,t.size=t.off}function zipBlob(t){const e=[];let s=0;t.cen.forEach(n=>{const i=new DataView(new ArrayBuffer(46));i.setUint32(0,33639248,!0),i.setUint16(4,20,!0),i.setUint16(6,20,!0),i.setUint16(8,2048,!0),i.setUint16(10,0,!0),i.setUint16(12,n.time,!0),i.setUint16(14,n.date,!0),i.setUint32(16,n.crc,!0),i.setUint32(20,n.len,!0),i.setUint32(24,n.len,!0),i.setUint16(28,n.nb.length,!0),i.setUint32(42,n.off,!0),e.push(i.buffer,n.nb),s+=46+n.nb.length});const a=new DataView(new ArrayBuffer(22));return a.setUint32(0,101010256,!0),a.setUint16(8,t.cen.length,!0),a.setUint16(10,t.cen.length,!0),a.setUint32(12,s,!0),a.setUint32(16,t.off,!0),new Blob(t.parts.concat(e,[a.buffer]),{type:"application/zip"})}function downloadBlob(t,e){const s=document.createElement("a");s.href=URL.createObjectURL(e),s.download=t,document.body.appendChild(s),s.click(),setTimeout(()=>{URL.revokeObjectURL(s.href),s.remove()},6e4)}async function cleanR2(){const t=e=>{const s=$("r2box");s&&(s.textContent=e)};try{t("\u062C\u0627\u0631\u064D \u0641\u062D\u0635 \u0627\u0644\u0635\u0648\u0631 \u0648\u0645\u0644\u0641\u0627\u062A \u0627\u0644\u0637\u0644\u0627\u0628\u2026");const[e,s]=await Promise.all([r2ListAll("img"),r2ListAll("user")]),a=await sb.rpc("admin_orphan_refs");if(a.error||!a.data)throw a.error||new Error("\u062A\u0639\u0630\u0631 \u0642\u0631\u0627\u0621\u0629 \u0627\u0644\u0645\u0631\u0627\u062C\u0639.");const n=new Set(a.data.imgs||[]),i=new Set((a.data.uids||[]).map(_=>String(_).toLowerCase())),l=Date.now()-36e5,o=e.filter(_=>!n.has(_.key)&&_.at&&_.at<l),c=new Set((a.data.stale||[]).map(_=>String(_).toLowerCase())),p=new Set,d=new Set;let b=0,r=0;s.forEach(_=>{const S=_.key.split("/")[1];if(!S)return;const x=S.toLowerCase();i.has(x)?c.has(x)&&(d.add(S),r+=_.size):(p.add(S),b+=_.size)});const u=o.reduce((_,S)=>_+S.size,0);if(!o.length&&!p.size&&!d.size){t("\u0644\u0627 \u064A\u0648\u062C\u062F \u0634\u064A\u0621 \u0644\u0644\u062A\u0646\u0638\u064A\u0641. \u0643\u0644 \u0627\u0644\u0635\u0648\u0631 \u0645\u0633\u062A\u0639\u0645\u0644\u0629\u060C \u0648\u0644\u0627 \u0645\u0644\u0641\u0627\u062A \u0644\u0637\u0644\u0627\u0628 \u0645\u062D\u0630\u0648\u0641\u064A\u0646 \u0623\u0648 \u0627\u0646\u062A\u0647\u0649 \u0627\u0634\u062A\u0631\u0627\u0643\u0647\u0645 \u0642\u0628\u0644 \u0623\u0643\u062B\u0631 \u0645\u0646 \u0633\u0646\u0629.");return}if(!await askConfirm("\u062A\u0646\u0638\u064A\u0641 R2","\u0633\u064A\u064F\u062D\u0630\u0641 \u0646\u0647\u0627\u0626\u064A\u0627\u064B: "+ar(o.length)+" \u0635\u0648\u0631\u0629 \u064A\u062A\u064A\u0645\u0629 (<bdi>"+ar(mbs(u))+" MB</bdi>) \u0648\u0645\u0644\u0641\u0627\u062A "+ar(p.size)+" \u0637\u0627\u0644\u0628 \u0645\u062D\u0630\u0648\u0641 (<bdi>"+ar(mbs(b))+" MB</bdi>) \u0648\u0645\u0644\u0641\u0627\u062A "+ar(d.size)+" \u0637\u0627\u0644\u0628 \u0627\u0646\u062A\u0647\u0649 \u0627\u0634\u062A\u0631\u0627\u0643\u0647 \u0642\u0628\u0644 \u0623\u0643\u062B\u0631 \u0645\u0646 \u0633\u0646\u0629 (<bdi>"+ar(mbs(r))+" MB</bdi>\u060C \u064A\u0628\u0642\u0649 \u062D\u0633\u0627\u0628\u0647\u0645 \u0648\u062A\u0642\u062F\u0645\u0647\u0645 \u0648\u064A\u064F\u062D\u0630\u0641 \u0641\u0642\u0637 \u0645\u0644\u0627\u062D\u0638\u0627\u062A\u0647\u0645 \u0648\u0623\u0633\u0626\u0644\u062A\u0647\u0645 \u0627\u0644\u062E\u0627\u0635\u0629). \u0627\u0644\u0635\u0648\u0631 \u0627\u0644\u0623\u062D\u062F\u062B \u0645\u0646 \u0633\u0627\u0639\u0629 \u0648\u0635\u0648\u0631 \u0633\u0644\u0629 \u0627\u0644\u0645\u062D\u0630\u0648\u0641\u0627\u062A \u0644\u0627 \u062A\u064F\u0645\u0633. \u0623\u0646\u0635\u062D\u0643 \u0628\u062A\u0646\u0632\u064A\u0644 \u0646\u0633\u062E\u0629 \u0634\u0627\u0645\u0644\u0629 \u0642\u0628\u0644 \u0627\u0644\u062A\u0646\u0638\u064A\u0641. \u062A\u062A\u0627\u0628\u0639\u061F".replace(/<\/?bdi[^>]*>/g,""),"\u0627\u062D\u0630\u0641")){t("");return}let m=0,h=0,y=0;for(const _ of o){try{await imgCall("DELETE",IMG_API+"?path="+encodeURIComponent(_.key)),m++}catch{y++}(m+y)%20===0&&t("\u062C\u0627\u0631\u064D \u0627\u0644\u062D\u0630\u0641\u2026 "+ar(m+y)+" \u0645\u0646 "+ar(o.length))}for(const _ of p)try{await imgCall("DELETE","/api/data?uid="+encodeURIComponent(_)),h++}catch{y++}for(const _ of d)try{await imgCall("DELETE","/api/data?keep=progress&uid="+encodeURIComponent(_)),h++}catch{y++}t("\u062A\u0645 \u062D\u0630\u0641 "+ar(m)+" \u0635\u0648\u0631\u0629 \u064A\u062A\u064A\u0645\u0629 \u0648\u0645\u0644\u0641\u0627\u062A "+ar(h)+" \u0637\u0627\u0644\u0628 (\u0645\u062D\u0630\u0648\u0641 \u0623\u0648 \u0645\u0646\u062A\u0647\u064D \u0627\u0634\u062A\u0631\u0627\u0643\u0647 \u0645\u0646\u0630 \u0623\u0643\u062B\u0631 \u0645\u0646 \u0633\u0646\u0629)"+(y?"\u060C \u0648\u0641\u0634\u0644 "+ar(y)+" (\u0623\u0639\u062F \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0629)":"")+".")}catch(e){t(e.message||errMsg(e))}}async function fullBackup(){const t=$("r2box"),e=s=>{const a=$("r2box");a&&(a.textContent=s)};try{e("\u062C\u0627\u0631\u064D \u062C\u0645\u0639 \u0627\u0644\u0623\u0633\u0626\u0644\u0629 \u0648\u0627\u0644\u062D\u0633\u0627\u0628\u0627\u062A\u2026");const[s,a,n,i]=await Promise.all([fetchAll(()=>sb.from("specialties").select("*").order("id")),fetchAll(()=>sb.from("subjects").select("*").order("id")),fetchAll(()=>sb.from("systems").select("*").order("id")),fetchAll(()=>sb.from("questions").select("*").order("id"))]),l=await sb.rpc("admin_backup_accounts");if(l.error)throw l.error;const o={};for(const v of BK_TABLES){e("\u062C\u0627\u0631\u064D \u062C\u0645\u0639 \u0627\u0644\u062C\u062F\u0627\u0648\u0644: "+v+"\u2026");let g=[],k=0;for(;;){const w=await sb.rpc("admin_backup_table",{p_table:v,p_from:k,p_n:5e3});if(w.error)throw w.error;const C=w.data||[];if(g=g.concat(C),C.length<5e3)break;k+=5e3}o[v]=g}e("\u062C\u0627\u0631\u064D \u0642\u0631\u0627\u0621\u0629 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0635\u0648\u0631 \u0648\u0628\u064A\u0627\u0646\u0627\u062A \u0627\u0644\u0637\u0644\u0627\u0628\u2026");const[c,p]=await Promise.all([r2ListAll("img"),r2ListAll("user")]),d=c.map(v=>({b:"img",key:v.key,size:v.size,name:"images/"+v.key})).concat(p.map(v=>({b:"user",key:v.key,size:v.size,name:"userdata/"+v.key.slice(6)})));for(const[v,g]of BK_BUCKETS){const k=await sb.rpc("admin_storage_list",{p_bucket:v});if(k.error)throw k.error;(k.data||[]).forEach(w=>d.push({sbk:v,key:w.name,size:Number(w.size)||0,name:g+"/"+w.name}))}const b=d.reduce((v,g)=>v+g.size,0),r=Math.max(1,Math.ceil(b/PART_BYTES));if(!await askConfirm("\u0646\u0633\u062E\u0629 \u0627\u062D\u062A\u064A\u0627\u0637\u064A\u0629 \u0634\u0627\u0645\u0644\u0629","\u0633\u062A\u064F\u0646\u0632\u064E\u0651\u0644 \u0627\u0644\u062C\u062F\u0627\u0648\u0644 (\u0644\u0648\u062D\u0629 \u0627\u0644\u0635\u062F\u0627\u0631\u0629\u060C \u0623\u064A\u0627\u0645 \u0627\u0644\u0646\u0634\u0627\u0637\u060C \u0625\u062D\u0635\u0627\u0626\u064A\u0627\u062A \u0627\u0644\u0623\u0633\u0626\u0644\u0629\u2026) \u0648"+ar(d.length)+" \u0645\u0644\u0641 (\u0635\u0648\u0631\u060C \u062A\u0642\u062F\u0645 \u0627\u0644\u0637\u0644\u0627\u0628\u060C \u0645\u0644\u0627\u062D\u0638\u0627\u062A\u0647\u0645\u060C \u0623\u063A\u0644\u0641\u0629 \u0627\u0644\u0645\u0648\u0627\u062F) \u0628\u062D\u062C\u0645 \u062D\u0648\u0627\u0644\u064A "+ar(mbs(b))+" MB\u060C \u0645\u0642\u0633\u0648\u0645\u0629 \u0625\u0644\u0649 \u062D\u0648\u0627\u0644\u064A "+ar(r)+" \u0645\u0644\u0641 ZIP. \u0627\u062A\u0631\u0643 \u0647\u0630\u0647 \u0627\u0644\u0635\u0641\u062D\u0629 \u0645\u0641\u062A\u0648\u062D\u0629 \u062D\u062A\u0649 \u064A\u0646\u062A\u0647\u064A. \u0647\u0644 \u062A\u062A\u0627\u0628\u0639\u061F","\u0627\u0628\u062F\u0623")){e("");return}const f=new Date().toISOString().slice(0,10),m=[];let h=zipNew(),y=1;const _=[],S=new TextEncoder().encode(JSON.stringify({app:"boardcard-full",version:2,exported_at:new Date().toISOString(),note:"\u0628\u062F\u0648\u0646 \u0643\u0644\u0645\u0627\u062A \u0627\u0644\u0633\u0631. \u0627\u0644\u062C\u062F\u0627\u0648\u0644 \u0641\u064A tables/\u060C \u0627\u0644\u0635\u0648\u0631 \u0641\u064A images/\u060C \u0645\u0644\u0627\u062D\u0638\u0627\u062A \u0648\u0623\u0633\u0626\u0644\u0629 \u0627\u0644\u0637\u0644\u0627\u0628 \u0641\u064A userdata/\u060C \u062A\u0642\u062F\u0645 \u0627\u0644\u0637\u0644\u0627\u0628 \u0641\u064A progress/\u060C \u0623\u063A\u0644\u0641\u0629 \u0627\u0644\u0645\u0648\u0627\u062F \u0641\u064A covers/.",content:{specialties:s,subjects:a,systems:n,questions:i},accounts:l.data},null,1));zipAdd(h,"data.json",S),Object.keys(o).forEach(v=>zipAdd(h,"tables/"+v+".json",new TextEncoder().encode(JSON.stringify(o[v]))));const x=()=>{const v="boardcard-backup-"+f+"-part"+y+".zip";return _.push(v),downloadBlob(v,zipBlob(h)),y++,h=zipNew(),new Promise(g=>setTimeout(g,1500))};let q=0,M=0;const L=async v=>{for(let g=0;g<2;g++)try{if(v.sbk){const w=await sb.storage.from(v.sbk).download(v.key);if(w.error||!w.data)throw w.error||new Error("x");return new Uint8Array(await w.data.arrayBuffer())}const k=await r2Fetch("/api/admin/get?b="+v.b+"&key="+encodeURIComponent(v.key));if(!k.ok)throw new Error(String(k.status));return new Uint8Array(await k.arrayBuffer())}catch{}return null};for(;M<d.length;){const v=d.slice(M,M+6);M+=6;const g=await Promise.all(v.map(L));for(let k=0;k<v.length;k++){if(!g[k]){m.push(v[k].key);continue}h.size>0&&h.size+g[k].length>PART_BYTES&&await x(),zipAdd(h,v[k].name,g[k])}q+=v.length,e("\u062C\u0627\u0631\u064D \u0627\u0644\u062A\u0646\u0632\u064A\u0644: "+ar(Math.min(q,d.length))+" \u0645\u0646 "+ar(d.length)+" \u0645\u0644\u0641\u2026")}m.length&&zipAdd(h,"FAILED.txt",new TextEncoder().encode(m.join(`
+`))),await x();try{localStorage.setItem("bc_last_backup",String(Date.now()))}catch{}e("\u0627\u0646\u062A\u0647\u062A \u0627\u0644\u0646\u0633\u062E\u0629: "+ar(_.length)+" \u0645\u0644\u0641 ZIP"+(m.length?"\u060C \u0648\u062A\u0639\u0630\u0631 \u062A\u0646\u0632\u064A\u0644 "+ar(m.length)+" \u0645\u0644\u0641 (\u0645\u0630\u0643\u0648\u0631\u0629 \u0641\u064A FAILED.txt)":"")+". \u062A\u0623\u0643\u062F \u0623\u0646 \u0627\u0644\u0645\u062A\u0635\u0641\u062D \u0633\u0645\u062D \u0628\u062A\u0646\u0632\u064A\u0644 \u0639\u062F\u0629 \u0645\u0644\u0641\u0627\u062A.")}catch(s){e(s.message||errMsg(s))}}async function loadDevs(){const t=$("dvlist");if(!t)return;const e=await sb.rpc("admin_device_flags",{p_days:7,p_min:3});if(!$("dvlist"))return;if(e.error){t.innerHTML=`<p class="err">${/admin_device_flags|schema cache|does not exist|Could not find/i.test((e.error.message||"")+(e.error.details||""))?"\u0645\u064A\u0632\u0629 \u0627\u0644\u0623\u062C\u0647\u0632\u0629 \u063A\u064A\u0631 \u0645\u0641\u0639\u0651\u0644\u0629 \u0628\u0639\u062F \u0641\u064A \u0642\u0627\u0639\u062F\u0629 \u0627\u0644\u0628\u064A\u0627\u0646\u0627\u062A.":esc(errMsg(e.error))}</p>`;return}const s=e.data||[];t.innerHTML=s.length?s.map((a,n)=>`<div class="item" style="--sc:${a.blocked?"#B93A32":"#C77A00"}"><div class="grow">
+      <div class="nm">${esc(a.full_name||a.username||"")}${a.blocked?' <span class="lock">\u0645\u0648\u0642\u0648\u0641</span>':""}</div>
+      <div class="sub"><bdi dir="ltr">${esc(a.username||"")}</bdi> \xB7 ${ar(a.devs)} \u0623\u062C\u0647\u0632\u0629 \u0645\u062E\u062A\u0644\u0641\u0629 \xB7 \u0622\u062E\u0631 \u062F\u062E\u0648\u0644 ${fdate(a.last_seen)}</div>
+      <div class="sub">${a.phone?"\u0627\u0644\u0647\u0627\u062A\u0641: "+phoneHtml(a.phone):"\u0644\u0627 \u064A\u0648\u062C\u062F \u0631\u0642\u0645 \u0647\u0627\u062A\u0641 \u0644\u0647\u0630\u0627 \u0627\u0644\u062D\u0633\u0627\u0628. \u0623\u0636\u0641\u0647 \u0645\u0646 \u062A\u0628\u0648\u064A\u0628 \u0627\u0644\u0637\u0644\u0627\u0628 \u062B\u0645 \xAB\u062A\u0639\u062F\u064A\u0644\xBB."}</div>
+    </div><div class="acts2"><button class="ib" data-dvr="${n}">\u062A\u0635\u0641\u064A\u0631</button><button class="ib del" data-dvb="${n}">${a.blocked?"\u0641\u0643 \u0627\u0644\u062D\u0638\u0631":"\u062D\u0638\u0631"}</button></div></div>`).join(""):'<div class="empty">\u0644\u0627 \u062A\u0648\u062C\u062F \u062D\u0633\u0627\u0628\u0627\u062A \u0628\u0623\u062C\u0647\u0632\u0629 \u0645\u062A\u0639\u062F\u062F\u0629 \u062D\u0627\u0644\u064A\u0627\u064B.</div>',t.querySelectorAll("[data-dvr]").forEach(a=>a.onclick=async()=>{const n=s[+a.dataset.dvr];if(!await askConfirm("\u062A\u0635\u0641\u064A\u0631 \u0639\u062F\u0651\u0627\u062F \u0627\u0644\u0623\u062C\u0647\u0632\u0629","\u0633\u064A\u0628\u062F\u0623 \u0639\u062F\u0651 \u0623\u062C\u0647\u0632\u0629 \xAB"+(n.full_name||n.username)+"\xBB \u0645\u0646 \u0627\u0644\u0635\u0641\u0631. \u0627\u0633\u062A\u0639\u0645\u0644 \u0647\u0630\u0627 \u0628\u0639\u062F \u0623\u0646 \u062A\u0646\u0628\u0651\u0647 \u0627\u0644\u0637\u0627\u0644\u0628.","\u0635\u0641\u0651\u0631"))return;const i=await sb.rpc("admin_devices_reset",{p_user:n.id});if(i.error){toast(errMsg(i.error));return}loadDevs()}),t.querySelectorAll("[data-dvb]").forEach(a=>a.onclick=async()=>{const n=s[+a.dataset.dvb],i=!n.blocked;if(!await askConfirm(i?"\u062D\u0638\u0631 \u0627\u0644\u062D\u0633\u0627\u0628":"\u0641\u0643 \u0627\u0644\u062D\u0638\u0631",(i?"\u0633\u064A\u064F\u0648\u0642\u0641 \u062D\u0633\u0627\u0628 \xAB":"\u0633\u064A\u064F\u0641\u062A\u062D \u062D\u0633\u0627\u0628 \xAB")+(n.full_name||n.username)+"\xBB.",i?"\u0627\u062D\u0638\u0631":"\u0627\u0641\u062A\u062D"))return;const l=await sb.rpc("admin_set_blocked",{p_user:n.id,p_blocked:i});if(l.error){toast(errMsg(l.error));return}loadDevs()})}async function loadAudit(){const t=$("aulist");if(!t)return;const e=await sb.rpc("admin_audit_list",{p_limit:200});if(!$("aulist"))return;if(e.error){t.innerHTML=`<p class="err">${/admin_audit_list|schema cache|does not exist|Could not find/i.test((e.error.message||"")+(e.error.details||""))?"\u0633\u062C\u0644 \u0627\u0644\u062A\u062F\u0642\u064A\u0642 \u063A\u064A\u0631 \u0645\u0641\u0639\u0651\u0644 \u0628\u0639\u062F \u0641\u064A \u0642\u0627\u0639\u062F\u0629 \u0627\u0644\u0628\u064A\u0627\u0646\u0627\u062A.":esc(errMsg(e.error))}</p>`;return}const s=e.data||[],a={subscriptions:"\u0627\u0634\u062A\u0631\u0627\u0643",activation_codes:"\u0643\u0648\u062F \u062A\u0641\u0639\u064A\u0644"},n={INSERT:"\u0625\u0636\u0627\u0641\u0629",UPDATE:"\u062A\u0639\u062F\u064A\u0644",DELETE:"\u062D\u0630\u0641"};t.innerHTML=s.length?s.map(i=>`<div class="item" style="--sc:#5A6B77;align-items:flex-start"><div class="grow">
+      <div class="nm">${esc(n[i.op]||i.op)} \xB7 ${esc(a[i.tbl]||i.tbl)}</div>
+      <div class="sub">${fdate(i.at)} ${ar(new Date(i.at).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}))} \xB7 \u0628\u0648\u0627\u0633\u0637\u0629 <bdi dir="ltr">${esc(i.actor_name||"\u2014")}</bdi></div>
+      <details><summary class="sub" style="cursor:pointer">\u0627\u0644\u062A\u0641\u0627\u0635\u064A\u0644</summary><pre dir="ltr" style="white-space:pre-wrap;word-break:break-all;font-size:11px;margin:6px 0 0">${esc(JSON.stringify(i.diff,null,1))}</pre></details>
+    </div></div>`).join(""):'<div class="empty">\u0644\u0627 \u062A\u0648\u062C\u062F \u062A\u063A\u064A\u064A\u0631\u0627\u062A \u0645\u0633\u062C\u0644\u0629 \u0628\u0639\u062F.</div>'}async function loadErrors(){const t=$("erlist");if(!t)return;const e=await sb.rpc("admin_errors");if(!$("erlist"))return;if(e.error){const n=/admin_errors|schema cache|does not exist|Could not find/i.test((e.error.message||"")+(e.error.details||""));t.innerHTML=`<p class="err">${n?"\u0644\u0645 \u064A\u064F\u0646\u0634\u0623 \u062C\u062F\u0648\u0644 \u0627\u0644\u0623\u062E\u0637\u0627\u0621 \u0628\u0639\u062F. \u0634\u063A\u0651\u0644 \u0645\u0644\u0641 client_errors.sql \u0641\u064A Supabase (SQL Editor) \u0645\u0631\u0629 \u0648\u0627\u062D\u062F\u0629.":esc(errMsg(e.error))}</p>`;return}const s=e.data||[],a=n=>{n=String(n||"");const i=/iPhone|iPad/.test(n)?"iPhone/iPad":/Android/.test(n)?"Android":/Windows/.test(n)?"Windows":/Mac OS/.test(n)?"Mac":"\u062C\u0647\u0627\u0632 \u0622\u062E\u0631",l=/Edg\//.test(n)?"Edge":/CriOS|Chrome/.test(n)?"Chrome":/FxiOS|Firefox/.test(n)?"Firefox":/Safari/.test(n)?"Safari":"";return i+(l?" \xB7 "+l:"")};t.innerHTML=s.length?s.map((n,i)=>`<div class="item" style="--sc:#B93A32;align-items:flex-start"><div class="grow">
+      <div class="nm" dir="auto" style="text-align:start;word-break:break-word">${esc(n.msg)}</div>
+      <div class="sub">${ar(n.n)} \u0645\u0631\u0629 \xB7 \u0622\u062E\u0631\u0647\u0627 ${fdate(n.last_at)} \u0627\u0644\u0633\u0627\u0639\u0629 ${ar(new Date(n.last_at).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}))}</div>
+      <div class="sub">\u0627\u0644\u0634\u0627\u0634\u0629: ${esc(n.view||"\u2014")} \xB7 ${esc(a(n.ua))} \xB7 \u0625\u0635\u062F\u0627\u0631 <bdi dir="ltr">${esc(n.ver||"\u2014")}</bdi></div>
+      <div class="sub" dir="ltr" style="text-align:start;word-break:break-all">${esc(n.src||"")}</div>
+      ${n.stack?`<details><summary class="sub" style="cursor:pointer">\u0627\u0644\u062A\u0641\u0627\u0635\u064A\u0644 \u0627\u0644\u062A\u0642\u0646\u064A\u0629</summary><pre dir="ltr" style="white-space:pre-wrap;word-break:break-all;font-size:11px;margin:6px 0 0">${esc(n.stack)}</pre></details>`:""}
+    </div><div class="acts2"><button class="ib" data-erd="${i}">\u062D\u0630\u0641</button></div></div>`).join(""):'<div class="empty">\u0644\u0627 \u062A\u0648\u062C\u062F \u0623\u062E\u0637\u0627\u0621 \u0645\u0633\u062C\u0644\u0629.</div>',t.querySelectorAll("[data-erd]").forEach(n=>n.onclick=async()=>{const i=s[+n.dataset.erd],l=await sb.rpc("admin_error_delete",{p_id:i.id});if(l.error){toast(errMsg(l.error));return}loadErrors()})}async function loadStats(){const t=$("stbox");if(!t)return;const e=await sb.rpc("admin_stats",{p_min:5});if(!$("stbox"))return;if(e.error||!e.data){t.innerHTML=`<p class="err">${esc(errMsg(e.error))}</p>`;return}const s=e.data,a=(d,b,r)=>`<div class="kpi"><b>${d}</b><span>${b}</span>${r?`<small>${r}</small>`:""}</div>`,n=(d,b)=>b?ar(Math.round(100*d/b))+"%":"\u2014",i=s.renew||{cohort:0,renewed:0},l=s.months||[],o=d=>ar(Math.round(d).toLocaleString("en-US"))+" \u062F",c=["","\u0643\u0627\u0646\u0648\u0646 \u0627\u0644\u062B\u0627\u0646\u064A","\u0634\u0628\u0627\u0637","\u0622\u0630\u0627\u0631","\u0646\u064A\u0633\u0627\u0646","\u0623\u064A\u0627\u0631","\u062D\u0632\u064A\u0631\u0627\u0646","\u062A\u0645\u0648\u0632","\u0622\u0628","\u0623\u064A\u0644\u0648\u0644","\u062A\u0634\u0631\u064A\u0646 \u0627\u0644\u0623\u0648\u0644","\u062A\u0634\u0631\u064A\u0646 \u0627\u0644\u062B\u0627\u0646\u064A","\u0643\u0627\u0646\u0648\u0646 \u0627\u0644\u0623\u0648\u0644"],p=d=>c[+d.slice(5)]+" "+ar(d.slice(0,4));t.innerHTML=`
   <div class="kpis">
-    ${kpi(ar(d.students),'طالب','فعّلوا حساباً: '+ar(d.activated)+' ('+pct(d.activated,d.students)+')')}
-    ${kpi(ar(d.subscribed_now),'مشترك الآن','اشتراكه ساري')}
-    ${kpi(ar(d.active_today),'نشط اليوم','حلّ أسئلة اليوم')}
-    ${kpi(ar(d.active_7),'نشط آخر 7 أيام',pct(d.active_7,d.subscribed_now)+' من المشتركين')}
-    ${kpi(ar(d.active_30),'نشط آخر 30 يوماً','')}
-    ${kpi(ar(d.answered_7),'إجابة خلال 7 أيام','')}
+    ${a(ar(s.students),"\u0637\u0627\u0644\u0628","\u0641\u0639\u0651\u0644\u0648\u0627 \u062D\u0633\u0627\u0628\u0627\u064B: "+ar(s.activated)+" ("+n(s.activated,s.students)+")")}
+    ${a(ar(s.subscribed_now),"\u0645\u0634\u062A\u0631\u0643 \u0627\u0644\u0622\u0646","\u0627\u0634\u062A\u0631\u0627\u0643\u0647 \u0633\u0627\u0631\u064A")}
+    ${a(ar(s.active_today),"\u0646\u0634\u0637 \u0627\u0644\u064A\u0648\u0645","\u062D\u0644\u0651 \u0623\u0633\u0626\u0644\u0629 \u0627\u0644\u064A\u0648\u0645")}
+    ${a(ar(s.active_7),"\u0646\u0634\u0637 \u0622\u062E\u0631 7 \u0623\u064A\u0627\u0645",n(s.active_7,s.subscribed_now)+" \u0645\u0646 \u0627\u0644\u0645\u0634\u062A\u0631\u0643\u064A\u0646")}
+    ${a(ar(s.active_30),"\u0646\u0634\u0637 \u0622\u062E\u0631 30 \u064A\u0648\u0645\u0627\u064B","")}
+    ${a(ar(s.answered_7),"\u0625\u062C\u0627\u0628\u0629 \u062E\u0644\u0627\u0644 7 \u0623\u064A\u0627\u0645","")}
   </div>
-  <h3 class="sec">اشتراكات تنتهي خلال 7 أيام (${ar(d.exp_week_n)})</h3>
-  ${(d.exp_week||[]).length?d.exp_week.map(x=>`<div class="item" style="--sc:#B7791F"><div class="grow"><div class="nm" dir="auto">${esc(x.name||'')} ${x.username?'<small>@'+esc(x.username)+'</small>':''}</div><div class="sub">${esc(x.sp||'')}، ينتهي ${fdate(x.exp)}</div></div></div>`).join(''):'<div class="empty">لا توجد اشتراكات تنتهي هذا الأسبوع.</div>'}
-  <h3 class="sec">مشتركون لم يستعملوا الموقع منذ 14 يوماً (${ar(d.idle_subscribed_n)})</h3>
-  ${(d.idle_subscribed||[]).length?d.idle_subscribed.map(x=>`<div class="item" style="--sc:#B93A32"><div class="grow"><div class="nm" dir="auto">${esc(x.name||'')} ${x.username?'<small>@'+esc(x.username)+'</small>':''}</div></div></div>`).join('')+'<p class="hint">هؤلاء الأقرب لعدم التجديد، راسلهم قبل أن ينتهي اشتراكهم.</p>':'<div class="empty">كل المشتركين نشطون.</div>'}
-  <h3 class="sec">التجديد</h3>
-  <div class="item" style="--sc:#1F5FBF;display:block"><div class="nm">${pct(rn.renewed,rn.cohort)}</div><div class="sub">${ar(rn.renewed)} من ${ar(rn.cohort)} طالباً انتهى اشتراكه الأول اشتروا كوداً ثانياً لنفس الاختصاص. (يُحسب من الأكواد المفعّلة، والتمديد اليدوي من لوحة الطلاب لا يدخل فيه.)</div></div>
-  <h3 class="sec">الإيراد</h3>
-  <div class="item" style="--sc:#1F5FBF;display:block"><div class="nm">${money(+d.sales_total||0)}</div><div class="sub">إجمالي كل المبيعات المسجّلة (${ar(d.sales_n)} عملية بيع)</div></div>
-  ${mo.slice().reverse().map(m=>`<div class="item" style="--sc:#1A56B0;align-items:flex-start"><div class="grow"><div class="nm">${mname(m.m)}</div><div class="sub">${(m.tiers||[]).length?(m.tiers||[]).map(t=>(+t.p?money(+t.p):'مجاني')+' × '+ar(t.q)).join('، '):'لا توجد مبيعات'}</div></div><b>${m.qty?money(+m.total):'—'}</b></div>`).join('')}
-  <p class="hint">المبلغ يُسجَّل لحظة إنشاء كود أو حساب أو تمديد، وبالسعر الذي تكتبه أنت (10,000 أو بخصم أو 0 للمجاني)، فالحساب مضبوط. المبيعات قبل هذا التحديث لم تُسجَّل.</p>
-  <h3 class="sec">أصعب الأسئلة (أقل نسبة صحيحة، ${ar(5)} إجابات فأكثر)</h3>
-  ${(d.hard||[]).length?d.hard.map(x=>`<div class="item" style="--sc:#B93A32;align-items:flex-start"><div class="grow"><div class="sub">${esc(x.subject||'')}</div><div class="nm" dir="auto" style="font-weight:500;font-size:14px">${esc(x.q)}</div></div><b>${ar(x.pct)}%<small style="display:block;font-weight:400;color:var(--muted)">من ${ar(x.n)}</small></b></div>`).join(''):'<div class="empty">لا توجد أسئلة كافية الإجابات بعد.</div>'}
-  <div class="item" style="--sc:#5A6B77;display:block"><div class="sub">تبليغات مفتوحة عن أخطاء: <b>${ar(d.reports_open)}</b></div></div>
-  <p class="hint">لا أعرض «تحوّل الزائر إلى مشترك» لأن الموقع لا يسجّل زيارات الزوار، وكنت قد طلبت إلغاء إحصائيات الاستخدام لتوفير مساحة القاعدة.</p>`;
-}
-async function exportBackup(kind){
-  toast('جارٍ تحضير الملف…');
-  try{
-    const [sp,su,sy,qs]=await Promise.all([
-      fetchAll(()=>sb.from('specialties').select('*').order('id')),
-      fetchAll(()=>sb.from('subjects').select('*').order('id')),
-      fetchAll(()=>sb.from('systems').select('*').order('id')),
-      fetchAll(()=>sb.from('questions').select('*').order('id'))]);
-    const day=new Date().toISOString().slice(0,10);
-    if(kind==='full'){
-      const ac=await sb.rpc('admin_backup_accounts');
-      if(ac.error)throw ac.error;
-      downloadFile('boardcard-FULL-backup-'+day+'.json',JSON.stringify({app:'boardcard-full',version:1,exported_at:new Date().toISOString(),note:'بدون كلمات السر',content:{specialties:sp,subjects:su,systems:sy,questions:qs},accounts:ac.data},null,1),'application/json');
-      try{localStorage.setItem('bc_last_backup',String(Date.now()))}catch(e){}
-    }else if(kind==='json'){
-      downloadFile('boardcard-backup-'+day+'.json',JSON.stringify({app:'boardcard',version:1,exported_at:new Date().toISOString(),specialties:sp,subjects:su,systems:sy,questions:qs},null,1),'application/json');
-      try{localStorage.setItem('bc_last_backup',String(Date.now()))}catch(e){}
-    }else{
-      const spn={},sun={},syn={};sp.forEach(x=>{spn[x.id]=x.n});su.forEach(x=>{sun[x.id]={n:x.n,sp:spn[x.sp]||''}});sy.forEach(x=>{syn[x.id]=x.n});
-      const cell=v=>{v=String(v==null?'':v);if(/^[=+\-@\t\r]/.test(v))v="'"+v;return /[",\n\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v};
-      const head=['id','specialty','subject','system','exam','year','free','question','A','B','C','D','E','F','correct','explanation'];
-      const lines=[head.join(',')].concat(qs.map(q=>{
-        const o=q.o||[],s=sun[q.s]||{n:q.s,sp:''};
-        return [q.id,s.sp,s.n,syn[q.sy]||'',q.ex,q.y||'',q.free?'yes':'no',q.q,o[0],o[1],o[2],o[3],o[4],o[5],LET[q.a]||'',q.e].map(cell).join(',');
-      }));
-      downloadFile('boardcard-questions-'+day+'.csv','\ufeff'+lines.join('\r\n'),'text/csv;charset=utf-8');
-    }
-    toast('تم تصدير '+ar(qs.length)+' سؤال');
-  }catch(e){toast(errMsg(e))}
-}
-
-/* ---------- المحذوفات (سلة 30 يوماً) ---------- */
-async function loadTrash(){
-  const el=$('trlist');if(!el)return;
-  const r=await sb.rpc('admin_trash_list');
-  if(r.error){el.innerHTML=`<p class="err">${esc(errMsg(r.error))}</p>`;return}
-  const rows=r.data||[];
-  el.innerHTML=rows.length?rows.map((x,i)=>{
-    const sj=subjOf(x.s);
-    return `<div class="item" style="--sc:#B93A32;align-items:flex-start"><div class="grow"><div class="nm">${ar(x.n)} سؤال، ${esc(sj.n)}</div>
-      <div class="sub">حُذفت ${fdate(x.at)} الساعة ${ar(new Date(x.at).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}))}</div>
-      <div class="sub" dir="auto" style="text-align:start">${esc(x.sample||'')}</div></div>
-      <div class="acts2"><button class="ib" data-tr="${i}">استرجاع</button></div></div>`}).join('')
-    :'<div class="empty">سلة المحذوفات فارغة.</div>';
-  el.querySelectorAll('[data-tr]').forEach(b=>b.onclick=async()=>{
-    const x=rows[+b.dataset.tr];
-    if(!(await askConfirm('استرجاع الأسئلة','سيتم استرجاع '+ar(x.n)+' سؤال إلى مادة «'+subjOf(x.s).n+'».','استرجع')))return;
-    b.disabled=true;
-    const d=await sb.rpc('admin_trash_restore',{p_at:x.at,p_subject:x.s});
-    if(d.error){b.disabled=false;toast(/foreign key|specialt|subjects_sp_fkey/i.test(String(d.error.message||'')+String(d.error.details||''))?'الاختصاص الخاص بهذه المادة محذوف، لا يمكن استرجاعها.':errMsg(d.error));return}
-    await loadAll();toast('تم استرجاع '+ar(d.data)+' سؤال');admin();
-  });
-}
-/* ---------- لوحة الشرف (إدارة) ---------- */
-async function loadLbBots(){
-  const el=$('lbbots');if(!el)return;
-  const r=await sb.rpc('admin_lb_bots_info');
-  const d=r.data&&(Array.isArray(r.data)?r.data[0]:r.data);
-  if(r.error||!d){el.innerHTML='';return}
-  el.innerHTML=`<div class="item" style="--sc:${d.enabled?'#1F5FBF':'#5A6B77'};align-items:flex-start"><div class="grow"><div class="nm">الأسماء التجريبية</div>
-    <div class="sub">${d.enabled?'مفعّلة':'متوقفة'}. تظهر ${ar(d.shown)} أسماء تجريبية بجانب ${ar(d.real_n)} طالب حقيقي، وتقل تلقائياً كلما انضم طالب حقيقي حتى تختفي عند 20 طالباً. لا تظهر في هذه القائمة.</div></div>
-    <div class="acts2"><button class="ib ${d.enabled?'del':''}" id="lbbt">${d.enabled?'إيقاف':'تفعيل'}</button></div></div>`;
-  $('lbbt').onclick=async()=>{
-    const x=await sb.rpc('admin_lb_bots_set',{p_enabled:!d.enabled});
-    if(x.error){toast(errMsg(x.error));return}
-    toast(d.enabled?'تم إيقاف الأسماء التجريبية':'تم تفعيل الأسماء التجريبية');loadLbBots();
-  };
-}
-async function loadLb(){
-  loadLbBots();
-  const r=await sb.rpc('admin_lb_list');
-  const el=$('lblist');if(!el)return;
-  if(r.error){el.innerHTML=`<p class="err">${esc(errMsg(r.error))}</p>`;return}
-  el.innerHTML=r.data.length?r.data.map(x=>`<div class="item" style="--sc:#1F5FBF;align-items:flex-start"><div class="grow">
-    <div class="nm" dir="auto">${esc(x.nickname)}</div>
-    <div class="sub">${esc(x.full_name||x.username)}${x.username?' (@'+esc(x.username)+')':''}</div>
-    <div class="sub">${ar(x.answered)} سؤال هذا الأسبوع، سلسلة ${ar(x.streak)}</div></div>
-    <div class="acts2"><button class="ib del" data-lr="${esc(x.user_id)}">إزالة</button></div></div>`).join(''):'<div class="empty">لا يوجد منضمون إلى لوحة الشرف بعد.</div>';
-  el.querySelectorAll('[data-lr]').forEach(b=>b.onclick=async()=>{
-    if(!(await askConfirm('إزالة من لوحة الشرف','سيُحذف الاسم المستعار ونتيجة هذا الطالب من لوحة الشرف، ويقدر ينضم من جديد باسم آخر.','أزل')))return;
-    const d=await sb.rpc('admin_lb_remove',{p_user:b.dataset.lr});
-    if(d.error){toast(errMsg(d.error));return}
-    toast('تمت الإزالة');loadLb();
-  });
-}
-
-/* ---------- أسعار البيع (للإيراد): تُدخل عند كل بيع ---------- */
-const RP_KEY='bc_recent_prices';
-const recentPrices=()=>{try{return JSON.parse(localStorage.getItem(RP_KEY)||'[]').filter(x=>x>=0).slice(0,4)}catch(e){return []}};
-function priceField(id,label){
-  const rp=recentPrices();
-  return `<label class="fld"><span>${label}</span><input class="in" id="${id}" type="number" min="0" inputmode="numeric" placeholder="اكتب 0 إذا كان مجانياً" style="direction:ltr;text-align:center"></label>${rp.length?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin:-4px 0 10px"><small style="color:var(--muted);align-self:center">آخر الأسعار:</small>${rp.map(p=>`<button type="button" class="pill" data-pp="${id}|${p}">${p?ar(p.toLocaleString('en-US')):'مجاني'}</button>`).join('')}</div>`:''}`;
-}
-function bindPriceChips(){document.querySelectorAll('[data-pp]').forEach(b=>b.onclick=()=>{const [id,p]=b.dataset.pp.split('|');const el=$(id);if(el){el.value=p;el.focus()}})}
-function readPrice(id){const el=$(id),v=el?parseFloat(el.value):NaN;return v>=0&&v<=10000000?v:null}
-function rememberPrice(p){const rp=recentPrices().filter(x=>x!==p);rp.unshift(p);try{localStorage.setItem(RP_KEY,JSON.stringify(rp.slice(0,4)))}catch(e){}}
-async function recordSale(o){
-  try{
-    const r=await sb.rpc('admin_record_sale',{p_kind:o.kind,p_specialty:o.sp||null,p_days:o.days||null,p_qty:o.qty||1,p_price:o.price,p_user:o.user||null,p_note:o.note||null});
-    if(r.error)throw r.error;
-    const rp=recentPrices().filter(x=>x!==o.price);rp.unshift(o.price);
-    try{localStorage.setItem(RP_KEY,JSON.stringify(rp.slice(0,4)))}catch(e){}
-  }catch(e){toast('تنبيه: لم يُسجَّل المبلغ في الإيراد، سجّله يدوياً أو أعد العملية.')}
-}
-async function makeCodes(){
-  const n=parseInt($('cn').value,10),d=parseInt($('cdays').value,10),note=$('cnote').value.trim()||null;
-  if(!(n>=1&&n<=50)||!(d>=1&&d<=365)){$('er').textContent='العدد من 1 إلى 50، والمدة من 1 إلى 365 يوم.';return}
-  const price=readPrice('cprice');
-  if(price===null){$('er').textContent='اكتب سعر الكود الواحد (0 إذا مجاني).';return}
-  $('er').textContent='';$('mk').disabled=true;
-  const sp=$('csp').value;
-  if(!sp){$('er').textContent='أضف اختصاصاً أولاً.';$('mk').disabled=false;return}
-  const r=await sb.rpc('admin_make_codes',{p_specialty:sp,p_count:n,p_days:d,p_note:note,p_user:null,p_kind:'code',p_price:price,p_sale_note:note});
-  $('mk').disabled=false;
-  if(r.error){$('er').textContent=errMsg(r.error);return}
-  rememberPrice(price);
-  const txt=r.data.join('\n');
-  $('newcodes').innerHTML=`<h3 class="sec">الأكواد الجديدة (${ar(r.data.length)})</h3><textarea class="in codebox" id="cbx" readonly>${esc(txt)}</textarea><button class="btn line block" id="cp" style="margin-top:8px">نسخ الكل</button>`;
-  $('cp').onclick=async()=>{try{await navigator.clipboard.writeText(txt);toast('تم النسخ')}catch(e){$('cbx').select();toast('حدد النص وانسخه يدوياً')}};
-  loadCodes();
-}
-async function loadCodes(){
-  const r=await sb.from('activation_codes').select('*').order('created_at',{ascending:false}).limit(100);
-  const el=$('codelist');if(!el)return;
-  if(r.error){el.innerHTML=`<p class="err">${esc(errMsg(r.error))}</p>`;return}
-  el.innerHTML=r.data.length?r.data.map(c=>`<div class="item" style="--sc:${c.used_by?'#5A6B77':'#1F5FBF'}"><div class="grow"><div class="nm" dir="ltr" style="text-align:start">${esc(c.code)}</div>
-    <div class="sub">${esc(spById(c.specialty_id).n)}، ${ar(c.days)} يوم${c.note?'، '+esc(c.note):''}</div></div>${c.used_by?'<span class="tag">مستخدم</span>':`<button class="ib" data-cc="${esc(c.code)}">نسخ</button>`}</div>`).join(''):'<div class="empty">لا توجد أكواد بعد.</div>';
-  el.querySelectorAll('[data-cc]').forEach(b=>b.onclick=()=>copyText(b.dataset.cc));
-}
-let USERS=[];
-async function loadUsers(){
-  const el=$('ulist');
-  try{USERS=await fetchAll(()=>sb.rpc('admin_list_users'))}
-  catch(e){if(el)el.innerHTML=`<p class="err">${esc(errMsg(e))}</p>`;return}
-  renderUsers();
-}
-function renderUsers(){
-  const el=$('ulist');if(!el)return;
-  const f=A.fu,now=Date.now();
-  const WK=7*864e5;
-  const liveOf=u=>(u.subs||[]).filter(x=>new Date(x.exp)>now);
-  const isSoon=u=>u.role!=='admin'&&liveOf(u).some(x=>new Date(x.exp)-now<=WK);
-  const isEnded=u=>u.role!=='admin'&&(u.subs||[]).length>0&&liveOf(u).length===0;
-  const nextExp=u=>Math.min.apply(null,liveOf(u).map(x=>+new Date(x.exp)));
-  const cs=USERS.filter(isSoon).length,ce=USERS.filter(isEnded).length;
-  app.querySelectorAll('[data-fx="soon"]').forEach(b=>b.textContent='ينتهي خلال 7 أيام ('+ar(cs)+')');
-  app.querySelectorAll('[data-fx="ended"]').forEach(b=>b.textContent='منتهي ('+ar(ce)+')');
-  let list=USERS.filter(u=>!f||((u.full_name||'')+' '+(u.username||'')).toLowerCase().includes(f));
-  if(A.fx==='soon')list=list.filter(isSoon).sort((a,b)=>nextExp(a)-nextExp(b));
-  else if(A.fx==='ended')list=list.filter(isEnded);
-  const UN=A.un||40;
-  el.innerHTML=list.length?list.slice(0,UN).map(u=>{
-    const subs=u.subs||[];
-    const live=subs.filter(x=>new Date(x.exp)>now);
-    const act=live.length>0;
-    const stud=u.role!=='admin';
-    const pend=u.codes||[];
-    const stTxt=u.blocked?'موقوف':(act?'فعّال':(subs.length?'منتهي':(pend.length?'بانتظار التفعيل':'بدون اشتراك')));
-    // compact card: one line per subscription, invitation details folded, secondary actions in a "more" menu
-    const left=x=>Math.max(1,Math.ceil((new Date(x.exp)-now)/864e5));
-    const subsHtml=subs.length?subs.map(x=>{const on=new Date(x.exp)>now,soon=on&&(new Date(x.exp)-now)<=7*864e5;
-      return `<div class="sub ucl"><b>${esc(spById(x.sp).n)}</b> · ${on?'ينتهي':'انتهى'} ${fdate(x.exp)}${soon?` <b class="uwarn">⚠ باقي ${ar(left(x))} يوم</b>`:''}<span class="uf"> · بدأ ${fdate(x.st||u.created_at)}</span></div>`}).join(''):(pend.length?'':'<div class="sub ucl">لا يوجد اشتراك.</div>');
-    const pendHtml=pend.map(c=>`<div class="sub ucl" style="color:#8A5F0A">🔑 رمز لم يُستخدم: <bdi dir="ltr" style="font-family:ui-monospace,Menlo,monospace;user-select:all">${esc(c.code)}</bdi> · ${esc(spById(c.sp).n)} · ${ar(c.days)} يوم</div>`).join('');
-    const refTxt=stud?`كود دعوته: <bdi dir="ltr" style="font-family:ui-monospace,Menlo,monospace;user-select:all">${esc(u.ref_code||'')}</bdi>، المشتركون بكوده: <b>${ar(u.ref_cnt||0)}</b>${u.ref_pend?' (بانتظار الاشتراك '+ar(u.ref_pend)+')':''}${u.ref_by?`<br>دعاه: <b>${esc(u.ref_by)}</b>${u.ref_by_amb?' 🎓 سفير، يستحق المدعو خصم 30% + 3 أيام':''} (${({pending:'بانتظار أول اشتراك',rewarded:'تمت المكافأة',no_inviter_sub:'تمت مكافأته، والداعي بلا اشتراك',invalid:'غير صالحة'})[u.ref_status]||esc(u.ref_status||'')})`:''}`:'';
-    const ambTxt=stud&&u.is_amb?`<br>🎓 <b>سفير دفعة</b>: مستحقاته ${ar(u.ref_amb||0)} اشتراك × ${ar('3,000')} د، المدفوع له ${ar(u.ref_paid||0)} من ${ar(u.ref_amb||0)}، المتبقي <b>${ar((((u.ref_amb||0)-(u.ref_paid||0))*3000).toLocaleString('en'))} د</b>`:'';
-    const detHtml=stud?`<details class="udet"><summary>الدعوة وتفاصيل الحساب${u.is_amb?' 🎓':''}</summary><div class="sub">${refTxt}${ambTxt}<br>أُنشئ الحساب ${fdate(u.created_at)}${u.last_login?'، آخر دخول '+fdate(u.last_login):''}</div></details>`:'';
-    const chip=`<span class="uch ${u.blocked?'bad':(act?'ok':'off')}">${stTxt}</span>`;
-    const more=stud?`<details class="umore"><summary class="ib">المزيد ▾</summary><div class="umenu"><button class="ib" data-uamb="${esc(u.id)}">${u.is_amb?'إلغاء السفير':'تحويل إلى سفير'}</button>${u.is_amb?`<button class="ib" data-upaid="${esc(u.id)}">تسجيل دفع</button>`:''}<button class="ib" data-ucp="${esc(u.id)}">نسخ المعلومات</button>${act?`<button class="ib" data-uchg="${esc(u.id)}">تغيير الاشتراك</button><button class="ib del" data-ucan="${esc(u.id)}">إلغاء الاشتراك</button>`:''}<button class="ib" data-up="${esc(u.id)}">كلمة سر جديدة</button><button class="ib ${u.blocked?'':'del'}" data-ub="${esc(u.id)}">${u.blocked?'رفع الإيقاف':'إيقاف'}</button><button class="ib del" data-udel="${esc(u.id)}">حذف</button></div></details>`:'';
-    return `<div class="item uc" style="--sc:${u.blocked?'#B93A32':(act?'#1F5FBF':'#5A6B77')};align-items:flex-start"><div class="grow"><div class="nm">${esc(u.full_name||'بدون اسم')}${u.role==='admin'?' (أدمن)':''} ${chip}</div>
-      <div class="sub ucl"><bdi dir="ltr" style="user-select:all">@${esc(u.username||'')}</bdi>${u.phone?' · '+phoneHtml(u.phone):''}</div>${subsHtml}${pendHtml}${detHtml}
-      <div class="acts3"><button class="ib" data-ur="${esc(u.id)}">تجديد</button>${(!stud&&Store.user&&u.id===Store.user.id)?`<button class="ib" data-uapw="1">كلمة السر</button>`:''}${stud?`${pend.length?`<button class="ib" data-uact="${esc(u.id)}">تفعيل الآن</button>`:''}<button class="ib" data-ued="${esc(u.id)}">تعديل</button>`:''}${more}</div></div></div>`}).join('')+(list.length>UN?`<button class="btn line block" id="umore">عرض المزيد (المعروض ${ar(UN)} من ${ar(list.length)})</button>`:'')
-    :'<div class="empty">لا يوجد طلاب مطابقون.</div>';
-  {const um=$('umore');if(um)um.onclick=()=>{A.un=UN+40;renderUsers()}}
-  el.querySelectorAll('[data-ur]').forEach(b=>b.onclick=()=>renewForm(USERS.find(x=>x.id===b.dataset.ur)));
-  el.querySelectorAll('[data-uapw]').forEach(b=>b.onclick=adminPwForm);
-  el.querySelectorAll('[data-ub]').forEach(b=>b.onclick=async()=>{
-    const u=USERS.find(x=>x.id===b.dataset.ub);
-    if(!u.blocked){const ok=await askConfirm('إيقاف الحساب','سيُمنع «'+(u.full_name||u.username)+'» من الدخول للمحتوى.','أوقف');if(!ok)return}
-    const r=await sb.rpc('admin_set_blocked',{p_user:u.id,p_blocked:!u.blocked});
-    if(r.error){toast(errMsg(r.error));return}
-    toast(u.blocked?'تم رفع الإيقاف':'تم إيقاف الحساب');loadUsers();
-  });
-  el.querySelectorAll('[data-ucan]').forEach(b=>b.onclick=()=>{
-    const u=USERS.find(x=>x.id===b.dataset.ucan),l=liveOf(u);
-    if(l.length)cancelSubForm(u,l);
-  });
-  el.querySelectorAll('[data-uchg]').forEach(b=>b.onclick=()=>{
-    const u=USERS.find(x=>x.id===b.dataset.uchg),l=liveOf(u);
-    if(l.length)changeSubForm(u,l);
-  });
-  el.querySelectorAll('[data-up]').forEach(b=>b.onclick=()=>resetPasswordForm(USERS.find(x=>x.id===b.dataset.up)));
-  el.querySelectorAll('[data-uact]').forEach(b=>b.onclick=async()=>{
-    const u=USERS.find(x=>x.id===b.dataset.uact),c=(u.codes||[])[0];if(!c)return;
-    if(!(await askConfirm('تفعيل الاشتراك','سيبدأ اشتراك «'+(u.full_name||u.username)+'» في «'+spById(c.sp).n+'» الآن لمدة '+ar(c.days)+' يوم.','فعّل')))return;
-    b.disabled=true;
-    const r=await sb.rpc('admin_activate_code',{p_code:c.code});
-    if(r.error){b.disabled=false;toast(errMsg(r.error));return}
-    toast('تم تفعيل الاشتراك');loadUsers();
-  });
-  el.querySelectorAll('[data-ued]').forEach(b=>b.onclick=()=>editStudentForm(USERS.find(x=>x.id===b.dataset.ued)));
-  el.querySelectorAll('[data-uamb]').forEach(b=>b.onclick=async()=>{
-    const u=USERS.find(x=>x.id===b.dataset.uamb),on=!u.is_amb,nm=u.full_name||u.username;
-    if(!(await askConfirm(on?'تحويل إلى سفير':'إلغاء السفير',on?'«'+nm+'» يحصل على 10 أيام مجانية + 3,000 د عن كل اشتراك جديد بكوده، والمدعو يحصل على خصم 30% مع الأيام الثلاثة المجانية. ينطبق على الاشتراكات القادمة فقط.':'تنتهي مكافآت السفير للاشتراكات القادمة، وتبقى مستحقاته السابقة كما هي.',on?'حوّل':'ألغِ')))return;
-    const r=await sb.rpc('admin_set_ambassador',{p_user:u.id,p_on:on});
-    if(r.error){toast(errMsg(r.error));return}
-    toast(on?'تم تحويله إلى سفير':'تم إلغاء السفير');loadUsers();
-  });
-  el.querySelectorAll('[data-upaid]').forEach(b=>b.onclick=()=>paidForm(USERS.find(x=>x.id===b.dataset.upaid)));
-  el.querySelectorAll('[data-udel]').forEach(b=>b.onclick=async()=>{
-    const u=USERS.find(x=>x.id===b.dataset.udel);
-    if(!(await askConfirm('حذف الحساب','سيُحذف حساب «'+(u.full_name||u.username)+'» نهائياً مع اشتراكه وملاحظاته وتقدمه. لا يمكن التراجع.','احذف')))return;
-    b.disabled=true;
-    const r=await sb.functions.invoke('student-admin',{body:{action:'delete',user_id:u.id}});
-    if(r.error||(r.data&&r.data.error)){b.disabled=false;toast('تعذر حذف الحساب. جرب مرة ثانية.');return}
-    imgCall('DELETE','/api/data?uid='+encodeURIComponent(u.id)).catch(()=>{});
-    toast('تم حذف الحساب');loadUsers();
-  });
-  el.querySelectorAll('[data-ucp]').forEach(b=>b.onclick=()=>{
-    const u=USERS.find(x=>x.id===b.dataset.ucp);
-    const lines=['حسابك في Boardcard','الاسم: '+(u.full_name||''),'اسم المستخدم: '+(u.username||'')];
-    (u.subs||[]).forEach(x=>lines.push(spById(x.sp).n+': من '+fdate(x.st||u.created_at)+' إلى '+fdate(x.exp)));
-    copyText(lines.join('\n'));
-  });
-}
-// تصدير قائمة الطلاب إلى ملف يفتح في Excel (بدون كلمات السر)
-function exportUsers(){
-  if(!USERS.length){toast('انتظر حتى تتحمّل قائمة الطلاب.');return}
-  const now=Date.now();
-  const cell=v=>{v=String(v==null?'':v);if(/^[=+\-@]/.test(v))v="'"+v;return /[",\n\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v};
-  const day=d=>{if(!d)return '';const t=new Date(d);return isNaN(t)?'':t.toISOString().slice(0,10)};
-  const head=['name','username','role','status','created','last_login','subscriptions','ref_code','referrals','ambassador'];
-  const lines=[head.join(',')].concat(USERS.map(u=>{
-    const subs=u.subs||[],live=subs.filter(x=>new Date(x.exp)>now);
-    const st=u.blocked?'blocked':(live.length?'active':(subs.length?'expired':((u.codes||[]).length?'pending':'none')));
-    return [u.full_name||'',u.username||'',u.role||'student',st,day(u.created_at),day(u.last_login),subs.map(x=>spById(x.sp).n+' ('+day(x.exp)+')').join(' | '),u.ref_code||'',u.ref_cnt||0,u.is_amb?'yes':'no'].map(cell).join(',');
-  }));
-  downloadFile('boardcard-students-'+new Date().toISOString().slice(0,10)+'.csv','\ufeff'+lines.join('\r\n'),'text/csv;charset=utf-8');
-  toast('تم تصدير '+ar(USERS.length)+' حساب');
-}
-// زر تجديد واحد: تمديد مباشر أو كود تفعيل، بأي مدة
-function renewForm(u){
-  if(!Store.specialties.length){toast('أضف اختصاصاً أولاً');return}
-  const stud=u.role!=='admin',subs=u.subs||[];
-  const has=sp=>subs.some(x=>x.sp===sp);
-  const first=subs[0]?subs[0].sp:Store.specialties[0].id;
-  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>تجديد الاشتراك</h2>
-    <p class="hint" style="margin:0 0 8px">${esc(u.full_name||u.username)}</p>
-    <label class="fld"><span>الاختصاص</span><select class="in" id="rsp">${Store.specialties.map(p=>`<option value="${esc(p.id)}" ${p.id===first?'selected':''}>${esc(p.n)}</option>`).join('')}</select></label>
-    <label class="fld"><span>المدة بالأيام</span><input class="in" id="rdd" type="number" min="1" max="365" value="30" style="direction:ltr;text-align:center"></label>
-    ${stud?`<label class="fld"><span>طريقة التجديد</span><select class="in" id="rmd"><option value="now">تمديد مباشر الآن (بدون كود)</option><option value="code">كود تفعيل أعطيه للطالب</option></select></label><p class="hint" id="rhn"></p>`:''}
-    ${priceField('rpr','المبلغ المدفوع بالدينار (للإيراد)')}
-    <p class="err" id="er" role="alert"></p><button class="btn block" id="rgo">تجديد</button>`);
-  $('cl').onclick=closeModal;bindPriceChips();
-  const sync=()=>{
-    if(!stud)return;
-    const h=has($('rsp').value);
-    $('rmd').value=h?'now':'code';
-    $('rhn').textContent=h?'التمديد المباشر يضيف المدة من تاريخ انتهاء اشتراكه الحالي (أو من اليوم إن كان منتهياً).':'ليس لديه اشتراك في هذا الاختصاص، فالأفضل إنشاء كود تفعيل له.';
-  };
-  $('rsp').onchange=sync;sync();
-  $('rgo').onclick=async()=>{
-    const sp=$('rsp').value,days=parseInt($('rdd').value,10),mode=stud?$('rmd').value:'now';
-    if(!(days>=1&&days<=365)){$('er').textContent='المدة من 1 إلى 365 يوم.';return}
-    const price=readPrice('rpr');
-    if(price===null){$('er').textContent='اكتب المبلغ المدفوع (0 إذا مجاني).';return}
-    $('rgo').disabled=true;$('er').textContent='';
-    if(mode==='now'){
-      const cur=subs.find(x=>x.sp===sp);
-      const base=Math.max(Date.now(),cur?+new Date(cur.exp):0);
-      const r=await sb.rpc('admin_extend_sale',{p_user:u.id,p_specialty:sp,p_days:days,p_price:price});
-      if(r.error){$('er').textContent=errMsg(r.error);$('rgo').disabled=false;return}
-      rememberPrice(price);
-      closeModal();toast('تم تمديد الاشتراك '+ar(days)+' يوماً');loadUsers();
-    }else{
-      const r=await sb.rpc('admin_make_codes',{p_specialty:sp,p_count:1,p_days:days,p_note:'تجديد',p_user:u.id,p_kind:'renew',p_price:price,p_sale_note:null});
-      if(r.error){$('er').textContent=errMsg(r.error);$('rgo').disabled=false;return}
-      rememberPrice(price);
-      const sn=spById(sp).n;
-      showCredentials('كود لـ '+(u.full_name||u.username),[['الاختصاص',sn],['رمز التفعيل',r.data[0]]],'الاختصاص: '+sn+'\nرمز التفعيل: '+r.data[0]+'\nالمدة: '+days+' يوم');
-      loadUsers();
-    }
-  };
-}
-// إنهاء اشتراك طالب في اختصاص فوراً: يُضبط تاريخ الانتهاء إلى الماضي (ويبقى السجل)، وإن رفضت الدالة ذلك يُحذف السجل
-async function endSub(u,sp){
-  const r=await sb.rpc('admin_set_expiry',{p_user:u.id,p_specialty:sp,p_expires:new Date(Date.now()-60000).toISOString()});
-  if(!r.error)return null;
-  const d=await sb.from('subscriptions').delete().eq('user_id',u.id).eq('specialty_id',sp).select();
-  if(d.error||!(d.data&&d.data.length))return r.error;
-  return null;
-}
-function cancelSubForm(u,live){
-  const nm=u.full_name||u.username;
-  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>إلغاء الاشتراك</h2>
-    <p class="hint" style="margin:0 0 8px">${esc(nm)}</p>
-    <label class="fld"><span>الاشتراك المراد إلغاؤه</span><select class="in" id="cks">${live.map(x=>`<option value="${esc(x.sp)}">${esc(spById(x.sp).n)} (ينتهي ${fdate(x.exp)})</option>`).join('')}</select></label>
-    <p class="hint">يُنهى الاشتراك فوراً ويفقد الطالب الوصول لهذا الاختصاص. يبقى حسابه وتقدمه وملاحظاته كما هي.</p>
-    <p class="err" id="er" role="alert"></p><button class="btn bad block" id="ckgo">إلغاء الاشتراك</button>`);
-  $('cl').onclick=closeModal;
-  $('ckgo').onclick=async()=>{
-    const sp=$('cks').value;
-    if(!(await askConfirm('إلغاء الاشتراك','سيُنهى اشتراك «'+nm+'» في «'+spById(sp).n+'» الآن ولا يمكن استرجاع المدة المتبقية إلا بتمديد جديد.','ألغِ الاشتراك')))return;
-    const e=await endSub(u,sp);
-    if(e){toast(errMsg(e));return}
-    toast('تم إلغاء الاشتراك');loadUsers();
-  };
-}
-function changeSubForm(u,live){
-  const nm=u.full_name||u.username;
-  if(!Store.specialties.length){toast('أضف اختصاصاً أولاً');return}
-  const left=x=>Math.min(365,Math.max(1,Math.ceil((new Date(x.exp)-Date.now())/864e5)));
-  const firstNew=(Store.specialties.find(p=>p.id!==live[0].sp)||Store.specialties[0]).id;
-  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>تغيير الاشتراك</h2>
-    <p class="hint" style="margin:0 0 8px">${esc(nm)}</p>
-    <label class="fld"><span>الاشتراك الحالي (يُنهى فوراً)</span><select class="in" id="cgo">${live.map(x=>`<option value="${esc(x.sp)}">${esc(spById(x.sp).n)} (ينتهي ${fdate(x.exp)})</option>`).join('')}</select></label>
-    <label class="fld"><span>الاختصاص الجديد</span><select class="in" id="cgn">${Store.specialties.map(p=>`<option value="${esc(p.id)}" ${p.id===firstNew?'selected':''}>${esc(p.n)}</option>`).join('')}</select></label>
-    <label class="fld"><span>مدة الاشتراك الجديد بالأيام</span><input class="in" id="cgd" type="number" min="1" max="365" value="${left(live[0])}" style="direction:ltr;text-align:center"></label>
-    <p class="hint">القيمة الافتراضية هي الأيام المتبقية من الاشتراك القديم، ويمكنك تعديلها. يبدأ الاشتراك الجديد فوراً.</p>
-    <p class="err" id="er" role="alert"></p><button class="btn block" id="cggo">تغيير الاشتراك</button>`);
-  $('cl').onclick=closeModal;
-  $('cgo').onchange=()=>{const x=live.find(z=>z.sp===$('cgo').value);if(x)$('cgd').value=left(x)};
-  $('cggo').onclick=async()=>{
-    const old=$('cgo').value,nw=$('cgn').value,days=parseInt($('cgd').value,10);
-    if(old===nw){$('er').textContent='اختر اختصاصاً مختلفاً عن الحالي.';return}
-    if(!(days>=1&&days<=365)){$('er').textContent='المدة من 1 إلى 365 يوم.';return}
-    $('cggo').disabled=true;$('er').textContent='';
-    const c=await sb.rpc('admin_change_sub',{p_user:u.id,p_old:old,p_new:nw,p_days:days});
-    if(c.error){$('er').textContent=errMsg(c.error);$('cggo').disabled=false;return}
-    closeModal();toast('تم تغيير الاشتراك');
-    loadUsers();
-  };
-}
-function pickSpecialty(title,askDays,u,cb){
-  if(!Store.specialties.length){toast('أضف اختصاصاً أولاً');return}
-  const first=(u&&(u.subs||[])[0])?u.subs[0].sp:Store.specialties[0].id;
-  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>${esc(title)}</h2>
-    <label class="fld"><span>الاختصاص</span><select class="in" id="pk">${Store.specialties.map(p=>`<option value="${esc(p.id)}" ${p.id===first?'selected':''}>${esc(p.n)}</option>`).join('')}</select></label>
-    ${askDays?`<label class="fld"><span>المدة بالأيام</span><input class="in" id="pd" type="number" min="1" max="365" value="30" style="direction:ltr;text-align:center"></label>`:''}
-    ${priceField('ppr','المبلغ المدفوع بالدينار (للإيراد)')}
-    <p class="err" id="er" role="alert"></p><button class="btn block" id="go">متابعة</button>`);
-  $('cl').onclick=closeModal;bindPriceChips();
-  $('go').onclick=()=>{
-    const days=askDays?parseInt($('pd').value,10):30;
-    if(!(days>=1&&days<=365)){$('er').textContent='المدة من 1 إلى 365 يوم.';return}
-    const price=readPrice('ppr');
-    if(price===null){$('er').textContent='اكتب المبلغ المدفوع (0 إذا مجاني).';return}
-    const sp=$('pk').value;closeModal();cb({sp:sp,days:days,price:price});
-  };
-}
-const genPass=()=>{const a='abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789',b=crypto.getRandomValues(new Uint8Array(10));let p='';b.forEach(x=>{p+=a[x%a.length]});return p};
-async function copyText(t){try{await navigator.clipboard.writeText(t);toast('تم النسخ')}catch(e){toast('حدد النص وانسخه يدوياً')}}
-function showCredentials(title,rows,message){
-  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>${esc(title)}</h2>
-    ${rows.map(r=>`<div class="fld"><span>${esc(r[0])}</span><div class="in" dir="ltr" style="text-align:start;font-family:ui-monospace,Menlo,monospace;font-size:17px;user-select:all">${esc(r[1])}</div></div>`).join('')}
-    <button class="btn block" id="cpm">نسخ الرسالة كاملة</button>
-    ${rows.some(r=>/كلمة السر/.test(r[0]))?'<p class="hint" style="margin-top:10px">كلمة السر لا تُحفظ ولن تظهر مرة ثانية. انسخ الرسالة الآن وأرسلها للطالب، وإذا ضاعت أنشئ له كلمة سر جديدة.</p>':''}`);
-  $('cl').onclick=closeModal;$('cpm').onclick=()=>copyText(message);
-}
-// optional phone: shown as a call link and a WhatsApp link (Iraqi numbers 07xxxxxxxxx become +9647xxxxxxxxx for WhatsApp)
-function phoneHtml(p){
-  p=String(p||'').trim();if(!p)return '';
-  const wa=p.replace(/^\+/,'').replace(/^00/,'').replace(/^0/,'964');
-  return `<bdi dir="ltr" style="user-select:all">${esc(p)}</bdi> · <a href="tel:${esc(p)}">اتصال</a> · <a href="https://wa.me/${esc(wa)}" target="_blank" rel="noopener noreferrer">واتساب</a>`;
-}
-// Change the admin's own password. The current password is checked with a separate, throw-away client so the
-// panel's own session (and its second-step verification, when switched on) is not replaced.
-function adminPwForm(){
-  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>تغيير كلمة سر الأدمن</h2>
-    <label class="fld"><span>كلمة السر الحالية</span><input class="in" id="pw0" type="password" autocomplete="current-password" style="direction:ltr;text-align:left"></label>
-    <label class="fld"><span>كلمة السر الجديدة (8 أحرف على الأقل)</span><input class="in" id="pw1" type="password" autocomplete="new-password" maxlength="72" style="direction:ltr;text-align:left"></label>
-    <label class="fld"><span>أعد كتابة الجديدة</span><input class="in" id="pw2" type="password" autocomplete="new-password" maxlength="72" style="direction:ltr;text-align:left"></label>
-    <p class="err" id="er" role="alert"></p><button class="btn block" id="pwgo">تغيير</button>`);
-  $('cl').onclick=closeModal;
-  $('pwgo').onclick=async()=>{
-    const a=$('pw0').value,b=$('pw1').value,c=$('pw2').value,er=$('er');
-    if(!a){er.textContent='اكتب كلمة السر الحالية.';return}
-    if(b.length<8||b.length>72){er.textContent='كلمة السر الجديدة من 8 إلى 72 حرفاً.';return}
-    if(b!==c){er.textContent='كلمتا السر الجديدتان غير متطابقتين.';return}
-    if(b===a){er.textContent='اختر كلمة سر مختلفة عن الحالية.';return}
-    $('pwgo').disabled=true;er.textContent='';
-    try{
-      const email=Store.user&&Store.user.email;
-      const tmp=window.supabase.createClient(SB_URL,SB_KEY,{auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false,storageKey:'sb-pwcheck'}});
-      const v=await tmp.auth.signInWithPassword({email:email,password:a});
-      try{await tmp.auth.signOut({scope:'local'})}catch(e){}
-      if(v.error){er.textContent='كلمة السر الحالية غير صحيحة.';$('pwgo').disabled=false;return}
-      const u=await sb.auth.updateUser({password:b});
-      if(u.error){er.textContent=/same|different/i.test(u.error.message||'')?'اختر كلمة سر مختلفة عن الحالية.':'تعذر تغيير كلمة السر. جرب مرة ثانية.';$('pwgo').disabled=false;return}
-      closeModal();toast('تم تغيير كلمة السر');
-    }catch(e){er.textContent='تعذر الاتصال. جرب مرة ثانية.';$('pwgo').disabled=false}
-  };
-}
-function createStudentForm(){
-  if(!Store.specialties.length){toast('أضف اختصاصاً أولاً');return}
-  const pw=genPass();
-  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>حساب طالب جديد</h2>
-    <label class="fld"><span>اسم الطالب</span><input class="in" id="sn" maxlength="60"></label>
-    <label class="fld"><span>الاختصاص المشترك به</span><select class="in" id="ssp">${Store.specialties.map(p=>`<option value="${esc(p.id)}">${esc(p.n)}</option>`).join('')}</select></label>
-    <label class="fld"><span>اسم المستخدم (إنكليزي بدون مسافات)</span><input class="in" id="su" autocapitalize="none" spellcheck="false" maxlength="30" style="direction:ltr;text-align:left"></label>
-    <label class="fld"><span>كلمة السر (8 أحرف على الأقل)</span><input class="in" id="sp2" value="${pw}" style="direction:ltr;text-align:left;font-family:ui-monospace,Menlo,monospace"></label>
-    <label class="fld"><span>مدة الاشتراك بالأيام</span><input class="in" id="sd" type="number" min="1" max="365" value="30" style="direction:ltr;text-align:center"></label>
-    <label class="fld"><span>رقم الهاتف (اختياري): للتواصل مع الطالب إذا حصل شك في مشاركة الحساب، ولا يراه غيرك</span><input class="in" id="sph" type="tel" inputmode="tel" autocomplete="off" maxlength="20" placeholder="07xxxxxxxxx" style="direction:ltr;text-align:left"></label>
-    ${priceField('spr','المبلغ المدفوع بالدينار (للإيراد)')}
-    <label class="fld"><span>كود الداعي (اختياري): عادي = الداعي 7 أيام والطالب 3 أيام. سفير = الداعي 10 أيام + 3,000 د والطالب 3 أيام + خصم 30% (تطبقه أنت عند الدفع)</span><input class="in" id="sref" autocapitalize="characters" spellcheck="false" maxlength="10" placeholder="مثلاً K7M2QX" style="direction:ltr;text-align:left;text-transform:uppercase"></label>
-    <p class="err" id="er" role="alert"></p><button class="btn block" id="sv">إنشاء الحساب والكود</button>`);
-  $('cl').onclick=closeModal;
-  $('sv').onclick=async()=>{
-    const specialty_id=$('ssp').value,full_name=$('sn').value.trim(),username=$('su').value.trim().toLowerCase(),password=$('sp2').value,days=parseInt($('sd').value,10),ref_code=$('sref').value.trim().toUpperCase(),phone=$('sph').value.trim();
-    if(!/^[a-z0-9._-]{3,30}$/.test(username)){$('er').textContent='اسم المستخدم: 3 إلى 30 حرفاً إنكليزياً أو أرقاماً أو . _ -';return}
-    if(phone&&!/^\+?[0-9\u0660-\u0669\s\-()]{7,20}$/.test(phone)){$('er').textContent='رقم الهاتف غير صحيح. اتركه فارغاً إن لم يتوفر.';return}
-    if(password.length<8){$('er').textContent='كلمة السر 8 أحرف على الأقل.';return}
-    if(!(days>=1&&days<=365)){$('er').textContent='المدة من 1 إلى 365 يوم.';return}
-    const price=readPrice('spr');
-    if(price===null){$('er').textContent='اكتب المبلغ المدفوع (0 إذا مجاني).';return}
-    $('sv').disabled=true;
-    const r=await sb.functions.invoke('student-admin',{body:{action:'create',username,password,full_name,days,specialty_id,ref_code,price,phone}});
-    let err=r.error?'تعذر إنشاء الحساب. جرب مرة ثانية.':null,d=r.data;
-    if(r.error&&r.error.context&&r.error.context.json){try{d=await r.error.context.json()}catch(e){}}
-    if(d&&d.error)err=({username_taken:'اسم المستخدم مستخدم من قبل.',bad_username:'اسم المستخدم غير صالح.',bad_password:'كلمة السر غير صالحة.',forbidden:'ما عندك صلاحية.',create_failed:'تعذر إنشاء الحساب. جرب اسم مستخدم آخر.',bad_specialty:'اختر الاختصاص.',bad_ref:'كود الداعي غير صحيح.',bad_phone:'رقم الهاتف غير صحيح. اتركه فارغاً إن لم يتوفر.'})[d.error]||err;
-    if(err||!d||!d.code){$('er').textContent=err||'تعذر إنشاء الحساب.';$('sv').disabled=false;return}
-    if(d.sale)rememberPrice(price);else await recordSale({kind:'student',sp:specialty_id,days:days,qty:1,price:price,note:full_name});
-    const spn=spById(specialty_id).n;
-    showCredentials('تم إنشاء الحساب',[['الاختصاص',spn],['اسم المستخدم',d.username],['كلمة السر',d.password],['رمز التفعيل',d.code]],
-      'حسابك في Boardcard\nالاختصاص: '+spn+'\nاسم المستخدم: '+d.username+'\nكلمة السر: '+d.password+'\nرمز التفعيل: '+d.code+'\nمدة الاشتراك: '+d.days+' يوم');
-    loadUsers();
-  };
-  bindPriceChips();
-  $('sn').focus();
-}
-
-function paidForm(u){
-  const max=u.ref_amb||0;
-  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>تسجيل دفع للسفير</h2>
-    <p>${esc(u.full_name||u.username)}: له ${ar(max)} اشتراك مستحق، وسُجّل أنك دفعت له عن ${ar(u.ref_paid||0)}.</p>
-    <label class="fld"><span>عدد الاشتراكات المدفوع عنها (من ${ar(max)})</span><input class="in" id="pdn" type="number" min="0" max="${max}" value="${u.ref_paid||0}" style="direction:ltr;text-align:center"></label>
-    <p class="hint">المتبقي = (المستحق - المدفوع) × 3,000 دينار.</p>
+  <h3 class="sec">\u0627\u0634\u062A\u0631\u0627\u0643\u0627\u062A \u062A\u0646\u062A\u0647\u064A \u062E\u0644\u0627\u0644 7 \u0623\u064A\u0627\u0645 (${ar(s.exp_week_n)})</h3>
+  ${(s.exp_week||[]).length?s.exp_week.map(d=>`<div class="item" style="--sc:#B7791F"><div class="grow"><div class="nm" dir="auto">${esc(d.name||"")} ${d.username?"<small>@"+esc(d.username)+"</small>":""}</div><div class="sub">${esc(d.sp||"")}\u060C \u064A\u0646\u062A\u0647\u064A ${fdate(d.exp)}</div></div></div>`).join(""):'<div class="empty">\u0644\u0627 \u062A\u0648\u062C\u062F \u0627\u0634\u062A\u0631\u0627\u0643\u0627\u062A \u062A\u0646\u062A\u0647\u064A \u0647\u0630\u0627 \u0627\u0644\u0623\u0633\u0628\u0648\u0639.</div>'}
+  <h3 class="sec">\u0645\u0634\u062A\u0631\u0643\u0648\u0646 \u0644\u0645 \u064A\u0633\u062A\u0639\u0645\u0644\u0648\u0627 \u0627\u0644\u0645\u0648\u0642\u0639 \u0645\u0646\u0630 14 \u064A\u0648\u0645\u0627\u064B (${ar(s.idle_subscribed_n)})</h3>
+  ${(s.idle_subscribed||[]).length?s.idle_subscribed.map(d=>`<div class="item" style="--sc:#B93A32"><div class="grow"><div class="nm" dir="auto">${esc(d.name||"")} ${d.username?"<small>@"+esc(d.username)+"</small>":""}</div></div></div>`).join("")+'<p class="hint">\u0647\u0624\u0644\u0627\u0621 \u0627\u0644\u0623\u0642\u0631\u0628 \u0644\u0639\u062F\u0645 \u0627\u0644\u062A\u062C\u062F\u064A\u062F\u060C \u0631\u0627\u0633\u0644\u0647\u0645 \u0642\u0628\u0644 \u0623\u0646 \u064A\u0646\u062A\u0647\u064A \u0627\u0634\u062A\u0631\u0627\u0643\u0647\u0645.</p>':'<div class="empty">\u0643\u0644 \u0627\u0644\u0645\u0634\u062A\u0631\u0643\u064A\u0646 \u0646\u0634\u0637\u0648\u0646.</div>'}
+  <h3 class="sec">\u0627\u0644\u062A\u062C\u062F\u064A\u062F</h3>
+  <div class="item" style="--sc:#1F5FBF;display:block"><div class="nm">${n(i.renewed,i.cohort)}</div><div class="sub">${ar(i.renewed)} \u0645\u0646 ${ar(i.cohort)} \u0637\u0627\u0644\u0628\u0627\u064B \u0627\u0646\u062A\u0647\u0649 \u0627\u0634\u062A\u0631\u0627\u0643\u0647 \u0627\u0644\u0623\u0648\u0644 \u0627\u0634\u062A\u0631\u0648\u0627 \u0643\u0648\u062F\u0627\u064B \u062B\u0627\u0646\u064A\u0627\u064B \u0644\u0646\u0641\u0633 \u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635. (\u064A\u064F\u062D\u0633\u0628 \u0645\u0646 \u0627\u0644\u0623\u0643\u0648\u0627\u062F \u0627\u0644\u0645\u0641\u0639\u0651\u0644\u0629\u060C \u0648\u0627\u0644\u062A\u0645\u062F\u064A\u062F \u0627\u0644\u064A\u062F\u0648\u064A \u0645\u0646 \u0644\u0648\u062D\u0629 \u0627\u0644\u0637\u0644\u0627\u0628 \u0644\u0627 \u064A\u062F\u062E\u0644 \u0641\u064A\u0647.)</div></div>
+  <h3 class="sec">\u0627\u0644\u0625\u064A\u0631\u0627\u062F</h3>
+  <div class="item" style="--sc:#1F5FBF;display:block"><div class="nm">${o(+s.sales_total||0)}</div><div class="sub">\u0625\u062C\u0645\u0627\u0644\u064A \u0643\u0644 \u0627\u0644\u0645\u0628\u064A\u0639\u0627\u062A \u0627\u0644\u0645\u0633\u062C\u0651\u0644\u0629 (${ar(s.sales_n)} \u0639\u0645\u0644\u064A\u0629 \u0628\u064A\u0639)</div></div>
+  ${l.slice().reverse().map(d=>`<div class="item" style="--sc:#1A56B0;align-items:flex-start"><div class="grow"><div class="nm">${p(d.m)}</div><div class="sub">${(d.tiers||[]).length?(d.tiers||[]).map(b=>(+b.p?o(+b.p):"\u0645\u062C\u0627\u0646\u064A")+" \xD7 "+ar(b.q)).join("\u060C "):"\u0644\u0627 \u062A\u0648\u062C\u062F \u0645\u0628\u064A\u0639\u0627\u062A"}</div></div><b>${d.qty?o(+d.total):"\u2014"}</b></div>`).join("")}
+  <p class="hint">\u0627\u0644\u0645\u0628\u0644\u063A \u064A\u064F\u0633\u062C\u064E\u0651\u0644 \u0644\u062D\u0638\u0629 \u0625\u0646\u0634\u0627\u0621 \u0643\u0648\u062F \u0623\u0648 \u062D\u0633\u0627\u0628 \u0623\u0648 \u062A\u0645\u062F\u064A\u062F\u060C \u0648\u0628\u0627\u0644\u0633\u0639\u0631 \u0627\u0644\u0630\u064A \u062A\u0643\u062A\u0628\u0647 \u0623\u0646\u062A (10,000 \u0623\u0648 \u0628\u062E\u0635\u0645 \u0623\u0648 0 \u0644\u0644\u0645\u062C\u0627\u0646\u064A)\u060C \u0641\u0627\u0644\u062D\u0633\u0627\u0628 \u0645\u0636\u0628\u0648\u0637. \u0627\u0644\u0645\u0628\u064A\u0639\u0627\u062A \u0642\u0628\u0644 \u0647\u0630\u0627 \u0627\u0644\u062A\u062D\u062F\u064A\u062B \u0644\u0645 \u062A\u064F\u0633\u062C\u064E\u0651\u0644.</p>
+  <h3 class="sec">\u0623\u0635\u0639\u0628 \u0627\u0644\u0623\u0633\u0626\u0644\u0629 (\u0623\u0642\u0644 \u0646\u0633\u0628\u0629 \u0635\u062D\u064A\u062D\u0629\u060C ${ar(5)} \u0625\u062C\u0627\u0628\u0627\u062A \u0641\u0623\u0643\u062B\u0631)</h3>
+  ${(s.hard||[]).length?s.hard.map(d=>`<div class="item" style="--sc:#B93A32;align-items:flex-start"><div class="grow"><div class="sub">${esc(d.subject||"")}</div><div class="nm" dir="auto" style="font-weight:500;font-size:14px">${esc(d.q)}</div></div><b>${ar(d.pct)}%<small style="display:block;font-weight:400;color:var(--muted)">\u0645\u0646 ${ar(d.n)}</small></b></div>`).join(""):'<div class="empty">\u0644\u0627 \u062A\u0648\u062C\u062F \u0623\u0633\u0626\u0644\u0629 \u0643\u0627\u0641\u064A\u0629 \u0627\u0644\u0625\u062C\u0627\u0628\u0627\u062A \u0628\u0639\u062F.</div>'}
+  <div class="item" style="--sc:#5A6B77;display:block"><div class="sub">\u062A\u0628\u0644\u064A\u063A\u0627\u062A \u0645\u0641\u062A\u0648\u062D\u0629 \u0639\u0646 \u0623\u062E\u0637\u0627\u0621: <b>${ar(s.reports_open)}</b></div></div>
+  <p class="hint">\u0644\u0627 \u0623\u0639\u0631\u0636 \xAB\u062A\u062D\u0648\u0651\u0644 \u0627\u0644\u0632\u0627\u0626\u0631 \u0625\u0644\u0649 \u0645\u0634\u062A\u0631\u0643\xBB \u0644\u0623\u0646 \u0627\u0644\u0645\u0648\u0642\u0639 \u0644\u0627 \u064A\u0633\u062C\u0651\u0644 \u0632\u064A\u0627\u0631\u0627\u062A \u0627\u0644\u0632\u0648\u0627\u0631\u060C \u0648\u0643\u0646\u062A \u0642\u062F \u0637\u0644\u0628\u062A \u0625\u0644\u063A\u0627\u0621 \u0625\u062D\u0635\u0627\u0626\u064A\u0627\u062A \u0627\u0644\u0627\u0633\u062A\u062E\u062F\u0627\u0645 \u0644\u062A\u0648\u0641\u064A\u0631 \u0645\u0633\u0627\u062D\u0629 \u0627\u0644\u0642\u0627\u0639\u062F\u0629.</p>`}async function exportBackup(t){toast("\u062C\u0627\u0631\u064D \u062A\u062D\u0636\u064A\u0631 \u0627\u0644\u0645\u0644\u0641\u2026");try{const[e,s,a,n]=await Promise.all([fetchAll(()=>sb.from("specialties").select("*").order("id")),fetchAll(()=>sb.from("subjects").select("*").order("id")),fetchAll(()=>sb.from("systems").select("*").order("id")),fetchAll(()=>sb.from("questions").select("*").order("id"))]),i=new Date().toISOString().slice(0,10);if(t==="full"){const l=await sb.rpc("admin_backup_accounts");if(l.error)throw l.error;downloadFile("boardcard-FULL-backup-"+i+".json",JSON.stringify({app:"boardcard-full",version:1,exported_at:new Date().toISOString(),note:"\u0628\u062F\u0648\u0646 \u0643\u0644\u0645\u0627\u062A \u0627\u0644\u0633\u0631",content:{specialties:e,subjects:s,systems:a,questions:n},accounts:l.data},null,1),"application/json");try{localStorage.setItem("bc_last_backup",String(Date.now()))}catch{}}else if(t==="json"){downloadFile("boardcard-backup-"+i+".json",JSON.stringify({app:"boardcard",version:1,exported_at:new Date().toISOString(),specialties:e,subjects:s,systems:a,questions:n},null,1),"application/json");try{localStorage.setItem("bc_last_backup",String(Date.now()))}catch{}}else{const l={},o={},c={};e.forEach(r=>{l[r.id]=r.n}),s.forEach(r=>{o[r.id]={n:r.n,sp:l[r.sp]||""}}),a.forEach(r=>{c[r.id]=r.n});const p=r=>(r=String(r??""),/^[=+\-@\t\r]/.test(r)&&(r="'"+r),/[",\n\r]/.test(r)?'"'+r.replace(/"/g,'""')+'"':r),b=[["id","specialty","subject","system","exam","year","free","question","A","B","C","D","E","F","correct","explanation"].join(",")].concat(n.map(r=>{const u=r.o||[],f=o[r.s]||{n:r.s,sp:""};return[r.id,f.sp,f.n,c[r.sy]||"",r.ex,r.y||"",r.free?"yes":"no",r.q,u[0],u[1],u[2],u[3],u[4],u[5],LET[r.a]||"",r.e].map(p).join(",")}));downloadFile("boardcard-questions-"+i+".csv","\uFEFF"+b.join(`\r
+`),"text/csv;charset=utf-8")}toast("\u062A\u0645 \u062A\u0635\u062F\u064A\u0631 "+ar(n.length)+" \u0633\u0624\u0627\u0644")}catch(e){toast(errMsg(e))}}async function loadTrash(){const t=$("trlist");if(!t)return;const e=await sb.rpc("admin_trash_list");if(e.error){t.innerHTML=`<p class="err">${esc(errMsg(e.error))}</p>`;return}const s=e.data||[];t.innerHTML=s.length?s.map((a,n)=>{const i=subjOf(a.s);return`<div class="item" style="--sc:#B93A32;align-items:flex-start"><div class="grow"><div class="nm">${ar(a.n)} \u0633\u0624\u0627\u0644\u060C ${esc(i.n)}</div>
+      <div class="sub">\u062D\u064F\u0630\u0641\u062A ${fdate(a.at)} \u0627\u0644\u0633\u0627\u0639\u0629 ${ar(new Date(a.at).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"}))}</div>
+      <div class="sub" dir="auto" style="text-align:start">${esc(a.sample||"")}</div></div>
+      <div class="acts2"><button class="ib" data-tr="${n}">\u0627\u0633\u062A\u0631\u062C\u0627\u0639</button></div></div>`}).join(""):'<div class="empty">\u0633\u0644\u0629 \u0627\u0644\u0645\u062D\u0630\u0648\u0641\u0627\u062A \u0641\u0627\u0631\u063A\u0629.</div>',t.querySelectorAll("[data-tr]").forEach(a=>a.onclick=async()=>{const n=s[+a.dataset.tr];if(!await askConfirm("\u0627\u0633\u062A\u0631\u062C\u0627\u0639 \u0627\u0644\u0623\u0633\u0626\u0644\u0629","\u0633\u064A\u062A\u0645 \u0627\u0633\u062A\u0631\u062C\u0627\u0639 "+ar(n.n)+" \u0633\u0624\u0627\u0644 \u0625\u0644\u0649 \u0645\u0627\u062F\u0629 \xAB"+subjOf(n.s).n+"\xBB.","\u0627\u0633\u062A\u0631\u062C\u0639"))return;a.disabled=!0;const i=await sb.rpc("admin_trash_restore",{p_at:n.at,p_subject:n.s});if(i.error){a.disabled=!1,toast(/foreign key|specialt|subjects_sp_fkey/i.test(String(i.error.message||"")+String(i.error.details||""))?"\u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635 \u0627\u0644\u062E\u0627\u0635 \u0628\u0647\u0630\u0647 \u0627\u0644\u0645\u0627\u062F\u0629 \u0645\u062D\u0630\u0648\u0641\u060C \u0644\u0627 \u064A\u0645\u0643\u0646 \u0627\u0633\u062A\u0631\u062C\u0627\u0639\u0647\u0627.":errMsg(i.error));return}await loadAll(),toast("\u062A\u0645 \u0627\u0633\u062A\u0631\u062C\u0627\u0639 "+ar(i.data)+" \u0633\u0624\u0627\u0644"),admin()})}async function loadLbBots(){const t=$("lbbots");if(!t)return;const e=await sb.rpc("admin_lb_bots_info"),s=e.data&&(Array.isArray(e.data)?e.data[0]:e.data);if(e.error||!s){t.innerHTML="";return}t.innerHTML=`<div class="item" style="--sc:${s.enabled?"#1F5FBF":"#5A6B77"};align-items:flex-start"><div class="grow"><div class="nm">\u0627\u0644\u0623\u0633\u0645\u0627\u0621 \u0627\u0644\u062A\u062C\u0631\u064A\u0628\u064A\u0629</div>
+    <div class="sub">${s.enabled?"\u0645\u0641\u0639\u0651\u0644\u0629":"\u0645\u062A\u0648\u0642\u0641\u0629"}. \u062A\u0638\u0647\u0631 ${ar(s.shown)} \u0623\u0633\u0645\u0627\u0621 \u062A\u062C\u0631\u064A\u0628\u064A\u0629 \u0628\u062C\u0627\u0646\u0628 ${ar(s.real_n)} \u0637\u0627\u0644\u0628 \u062D\u0642\u064A\u0642\u064A\u060C \u0648\u062A\u0642\u0644 \u062A\u0644\u0642\u0627\u0626\u064A\u0627\u064B \u0643\u0644\u0645\u0627 \u0627\u0646\u0636\u0645 \u0637\u0627\u0644\u0628 \u062D\u0642\u064A\u0642\u064A \u062D\u062A\u0649 \u062A\u062E\u062A\u0641\u064A \u0639\u0646\u062F 20 \u0637\u0627\u0644\u0628\u0627\u064B. \u0644\u0627 \u062A\u0638\u0647\u0631 \u0641\u064A \u0647\u0630\u0647 \u0627\u0644\u0642\u0627\u0626\u0645\u0629.</div></div>
+    <div class="acts2"><button class="ib ${s.enabled?"del":""}" id="lbbt">${s.enabled?"\u0625\u064A\u0642\u0627\u0641":"\u062A\u0641\u0639\u064A\u0644"}</button></div></div>`,$("lbbt").onclick=async()=>{const a=await sb.rpc("admin_lb_bots_set",{p_enabled:!s.enabled});if(a.error){toast(errMsg(a.error));return}toast(s.enabled?"\u062A\u0645 \u0625\u064A\u0642\u0627\u0641 \u0627\u0644\u0623\u0633\u0645\u0627\u0621 \u0627\u0644\u062A\u062C\u0631\u064A\u0628\u064A\u0629":"\u062A\u0645 \u062A\u0641\u0639\u064A\u0644 \u0627\u0644\u0623\u0633\u0645\u0627\u0621 \u0627\u0644\u062A\u062C\u0631\u064A\u0628\u064A\u0629"),loadLbBots()}}async function loadLb(){loadLbBots();const t=await sb.rpc("admin_lb_list"),e=$("lblist");if(e){if(t.error){e.innerHTML=`<p class="err">${esc(errMsg(t.error))}</p>`;return}e.innerHTML=t.data.length?t.data.map(s=>`<div class="item" style="--sc:#1F5FBF;align-items:flex-start"><div class="grow">
+    <div class="nm" dir="auto">${esc(s.nickname)}</div>
+    <div class="sub">${esc(s.full_name||s.username)}${s.username?" (@"+esc(s.username)+")":""}</div>
+    <div class="sub">${ar(s.answered)} \u0633\u0624\u0627\u0644 \u0647\u0630\u0627 \u0627\u0644\u0623\u0633\u0628\u0648\u0639\u060C \u0633\u0644\u0633\u0644\u0629 ${ar(s.streak)}</div></div>
+    <div class="acts2"><button class="ib del" data-lr="${esc(s.user_id)}">\u0625\u0632\u0627\u0644\u0629</button></div></div>`).join(""):'<div class="empty">\u0644\u0627 \u064A\u0648\u062C\u062F \u0645\u0646\u0636\u0645\u0648\u0646 \u0625\u0644\u0649 \u0644\u0648\u062D\u0629 \u0627\u0644\u0634\u0631\u0641 \u0628\u0639\u062F.</div>',e.querySelectorAll("[data-lr]").forEach(s=>s.onclick=async()=>{if(!await askConfirm("\u0625\u0632\u0627\u0644\u0629 \u0645\u0646 \u0644\u0648\u062D\u0629 \u0627\u0644\u0634\u0631\u0641","\u0633\u064A\u064F\u062D\u0630\u0641 \u0627\u0644\u0627\u0633\u0645 \u0627\u0644\u0645\u0633\u062A\u0639\u0627\u0631 \u0648\u0646\u062A\u064A\u062C\u0629 \u0647\u0630\u0627 \u0627\u0644\u0637\u0627\u0644\u0628 \u0645\u0646 \u0644\u0648\u062D\u0629 \u0627\u0644\u0634\u0631\u0641\u060C \u0648\u064A\u0642\u062F\u0631 \u064A\u0646\u0636\u0645 \u0645\u0646 \u062C\u062F\u064A\u062F \u0628\u0627\u0633\u0645 \u0622\u062E\u0631.","\u0623\u0632\u0644"))return;const a=await sb.rpc("admin_lb_remove",{p_user:s.dataset.lr});if(a.error){toast(errMsg(a.error));return}toast("\u062A\u0645\u062A \u0627\u0644\u0625\u0632\u0627\u0644\u0629"),loadLb()})}}const RP_KEY="bc_recent_prices",recentPrices=()=>{try{return JSON.parse(localStorage.getItem(RP_KEY)||"[]").filter(t=>t>=0).slice(0,4)}catch{return[]}};function priceField(t,e){const s=recentPrices();return`<label class="fld"><span>${e}</span><input class="in" id="${t}" type="number" min="0" inputmode="numeric" placeholder="\u0627\u0643\u062A\u0628 0 \u0625\u0630\u0627 \u0643\u0627\u0646 \u0645\u062C\u0627\u0646\u064A\u0627\u064B" style="direction:ltr;text-align:center"></label>${s.length?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin:-4px 0 10px"><small style="color:var(--muted);align-self:center">\u0622\u062E\u0631 \u0627\u0644\u0623\u0633\u0639\u0627\u0631:</small>${s.map(a=>`<button type="button" class="pill" data-pp="${t}|${a}">${a?ar(a.toLocaleString("en-US")):"\u0645\u062C\u0627\u0646\u064A"}</button>`).join("")}</div>`:""}`}function bindPriceChips(){document.querySelectorAll("[data-pp]").forEach(t=>t.onclick=()=>{const[e,s]=t.dataset.pp.split("|"),a=$(e);a&&(a.value=s,a.focus())})}function readPrice(t){const e=$(t),s=e?parseFloat(e.value):NaN;return s>=0&&s<=1e7?s:null}function rememberPrice(t){const e=recentPrices().filter(s=>s!==t);e.unshift(t);try{localStorage.setItem(RP_KEY,JSON.stringify(e.slice(0,4)))}catch{}}async function recordSale(t){try{const e=await sb.rpc("admin_record_sale",{p_kind:t.kind,p_specialty:t.sp||null,p_days:t.days||null,p_qty:t.qty||1,p_price:t.price,p_user:t.user||null,p_note:t.note||null});if(e.error)throw e.error;const s=recentPrices().filter(a=>a!==t.price);s.unshift(t.price);try{localStorage.setItem(RP_KEY,JSON.stringify(s.slice(0,4)))}catch{}}catch{toast("\u062A\u0646\u0628\u064A\u0647: \u0644\u0645 \u064A\u064F\u0633\u062C\u064E\u0651\u0644 \u0627\u0644\u0645\u0628\u0644\u063A \u0641\u064A \u0627\u0644\u0625\u064A\u0631\u0627\u062F\u060C \u0633\u062C\u0651\u0644\u0647 \u064A\u062F\u0648\u064A\u0627\u064B \u0623\u0648 \u0623\u0639\u062F \u0627\u0644\u0639\u0645\u0644\u064A\u0629.")}}async function makeCodes(){const t=parseInt($("cn").value,10),e=parseInt($("cdays").value,10),s=$("cnote").value.trim()||null;if(!(t>=1&&t<=50)||!(e>=1&&e<=365)){$("er").textContent="\u0627\u0644\u0639\u062F\u062F \u0645\u0646 1 \u0625\u0644\u0649 50\u060C \u0648\u0627\u0644\u0645\u062F\u0629 \u0645\u0646 1 \u0625\u0644\u0649 365 \u064A\u0648\u0645.";return}const a=readPrice("cprice");if(a===null){$("er").textContent="\u0627\u0643\u062A\u0628 \u0633\u0639\u0631 \u0627\u0644\u0643\u0648\u062F \u0627\u0644\u0648\u0627\u062D\u062F (0 \u0625\u0630\u0627 \u0645\u062C\u0627\u0646\u064A).";return}$("er").textContent="",$("mk").disabled=!0;const n=$("csp").value;if(!n){$("er").textContent="\u0623\u0636\u0641 \u0627\u062E\u062A\u0635\u0627\u0635\u0627\u064B \u0623\u0648\u0644\u0627\u064B.",$("mk").disabled=!1;return}const i=await sb.rpc("admin_make_codes",{p_specialty:n,p_count:t,p_days:e,p_note:s,p_user:null,p_kind:"code",p_price:a,p_sale_note:s});if($("mk").disabled=!1,i.error){$("er").textContent=errMsg(i.error);return}rememberPrice(a);const l=i.data.join(`
+`);$("newcodes").innerHTML=`<h3 class="sec">\u0627\u0644\u0623\u0643\u0648\u0627\u062F \u0627\u0644\u062C\u062F\u064A\u062F\u0629 (${ar(i.data.length)})</h3><textarea class="in codebox" id="cbx" readonly>${esc(l)}</textarea><button class="btn line block" id="cp" style="margin-top:8px">\u0646\u0633\u062E \u0627\u0644\u0643\u0644</button>`,$("cp").onclick=async()=>{try{await navigator.clipboard.writeText(l),toast("\u062A\u0645 \u0627\u0644\u0646\u0633\u062E")}catch{$("cbx").select(),toast("\u062D\u062F\u062F \u0627\u0644\u0646\u0635 \u0648\u0627\u0646\u0633\u062E\u0647 \u064A\u062F\u0648\u064A\u0627\u064B")}},loadCodes()}async function loadCodes(){const t=await sb.from("activation_codes").select("*").order("created_at",{ascending:!1}).limit(100),e=$("codelist");if(e){if(t.error){e.innerHTML=`<p class="err">${esc(errMsg(t.error))}</p>`;return}e.innerHTML=t.data.length?t.data.map(s=>`<div class="item" style="--sc:${s.used_by?"#5A6B77":"#1F5FBF"}"><div class="grow"><div class="nm" dir="ltr" style="text-align:start">${esc(s.code)}</div>
+    <div class="sub">${esc(spById(s.specialty_id).n)}\u060C ${ar(s.days)} \u064A\u0648\u0645${s.note?"\u060C "+esc(s.note):""}</div></div>${s.used_by?'<span class="tag">\u0645\u0633\u062A\u062E\u062F\u0645</span>':`<button class="ib" data-cc="${esc(s.code)}">\u0646\u0633\u062E</button>`}</div>`).join(""):'<div class="empty">\u0644\u0627 \u062A\u0648\u062C\u062F \u0623\u0643\u0648\u0627\u062F \u0628\u0639\u062F.</div>',e.querySelectorAll("[data-cc]").forEach(s=>s.onclick=()=>copyText(s.dataset.cc))}}let USERS=[];async function loadUsers(){const t=$("ulist");try{USERS=await fetchAll(()=>sb.rpc("admin_list_users"))}catch(e){t&&(t.innerHTML=`<p class="err">${esc(errMsg(e))}</p>`);return}renderUsers()}function renderUsers(){const t=$("ulist");if(!t)return;const e=A.fu,s=Date.now(),a=7*864e5,n=r=>(r.subs||[]).filter(u=>new Date(u.exp)>s),i=r=>r.role!=="admin"&&n(r).some(u=>new Date(u.exp)-s<=a),l=r=>r.role!=="admin"&&(r.subs||[]).length>0&&n(r).length===0,o=r=>Math.min.apply(null,n(r).map(u=>+new Date(u.exp))),c=USERS.filter(i).length,p=USERS.filter(l).length;app.querySelectorAll('[data-fx="soon"]').forEach(r=>r.textContent="\u064A\u0646\u062A\u0647\u064A \u062E\u0644\u0627\u0644 7 \u0623\u064A\u0627\u0645 ("+ar(c)+")"),app.querySelectorAll('[data-fx="ended"]').forEach(r=>r.textContent="\u0645\u0646\u062A\u0647\u064A ("+ar(p)+")");let d=USERS.filter(r=>!e||((r.full_name||"")+" "+(r.username||"")).toLowerCase().includes(e));A.fx==="soon"?d=d.filter(i).sort((r,u)=>o(r)-o(u)):A.fx==="ended"&&(d=d.filter(l));const b=A.un||40;t.innerHTML=d.length?d.slice(0,b).map(r=>{const u=r.subs||[],m=u.filter(w=>new Date(w.exp)>s).length>0,h=r.role!=="admin",y=r.codes||[],_=r.blocked?"\u0645\u0648\u0642\u0648\u0641":m?"\u0641\u0639\u0651\u0627\u0644":u.length?"\u0645\u0646\u062A\u0647\u064A":y.length?"\u0628\u0627\u0646\u062A\u0638\u0627\u0631 \u0627\u0644\u062A\u0641\u0639\u064A\u0644":"\u0628\u062F\u0648\u0646 \u0627\u0634\u062A\u0631\u0627\u0643",S=w=>Math.max(1,Math.ceil((new Date(w.exp)-s)/864e5)),x=u.length?u.map(w=>{const C=new Date(w.exp)>s,E=C&&new Date(w.exp)-s<=7*864e5;return`<div class="sub ucl"><b>${esc(spById(w.sp).n)}</b> \xB7 ${C?"\u064A\u0646\u062A\u0647\u064A":"\u0627\u0646\u062A\u0647\u0649"} ${fdate(w.exp)}${E?` <b class="uwarn">\u26A0 \u0628\u0627\u0642\u064A ${ar(S(w))} \u064A\u0648\u0645</b>`:""}<span class="uf"> \xB7 \u0628\u062F\u0623 ${fdate(w.st||r.created_at)}</span></div>`}).join(""):y.length?"":'<div class="sub ucl">\u0644\u0627 \u064A\u0648\u062C\u062F \u0627\u0634\u062A\u0631\u0627\u0643.</div>',q=y.map(w=>`<div class="sub ucl" style="color:#8A5F0A">\u{1F511} \u0631\u0645\u0632 \u0644\u0645 \u064A\u064F\u0633\u062A\u062E\u062F\u0645: <bdi dir="ltr" style="font-family:ui-monospace,Menlo,monospace;user-select:all">${esc(w.code)}</bdi> \xB7 ${esc(spById(w.sp).n)} \xB7 ${ar(w.days)} \u064A\u0648\u0645</div>`).join(""),M=h?`\u0643\u0648\u062F \u062F\u0639\u0648\u062A\u0647: <bdi dir="ltr" style="font-family:ui-monospace,Menlo,monospace;user-select:all">${esc(r.ref_code||"")}</bdi>\u060C \u0627\u0644\u0645\u0634\u062A\u0631\u0643\u0648\u0646 \u0628\u0643\u0648\u062F\u0647: <b>${ar(r.ref_cnt||0)}</b>${r.ref_pend?" (\u0628\u0627\u0646\u062A\u0638\u0627\u0631 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643 "+ar(r.ref_pend)+")":""}${r.ref_by?`<br>\u062F\u0639\u0627\u0647: <b>${esc(r.ref_by)}</b>${r.ref_by_amb?" \u{1F393} \u0633\u0641\u064A\u0631\u060C \u064A\u0633\u062A\u062D\u0642 \u0627\u0644\u0645\u062F\u0639\u0648 \u062E\u0635\u0645 30% + 3 \u0623\u064A\u0627\u0645":""} (${{pending:"\u0628\u0627\u0646\u062A\u0638\u0627\u0631 \u0623\u0648\u0644 \u0627\u0634\u062A\u0631\u0627\u0643",rewarded:"\u062A\u0645\u062A \u0627\u0644\u0645\u0643\u0627\u0641\u0623\u0629",no_inviter_sub:"\u062A\u0645\u062A \u0645\u0643\u0627\u0641\u0623\u062A\u0647\u060C \u0648\u0627\u0644\u062F\u0627\u0639\u064A \u0628\u0644\u0627 \u0627\u0634\u062A\u0631\u0627\u0643",invalid:"\u063A\u064A\u0631 \u0635\u0627\u0644\u062D\u0629"}[r.ref_status]||esc(r.ref_status||"")})`:""}`:"",L=h&&r.is_amb?`<br>\u{1F393} <b>\u0633\u0641\u064A\u0631 \u062F\u0641\u0639\u0629</b>: \u0645\u0633\u062A\u062D\u0642\u0627\u062A\u0647 ${ar(r.ref_amb||0)} \u0627\u0634\u062A\u0631\u0627\u0643 \xD7 ${ar("3,000")} \u062F\u060C \u0627\u0644\u0645\u062F\u0641\u0648\u0639 \u0644\u0647 ${ar(r.ref_paid||0)} \u0645\u0646 ${ar(r.ref_amb||0)}\u060C \u0627\u0644\u0645\u062A\u0628\u0642\u064A <b>${ar((((r.ref_amb||0)-(r.ref_paid||0))*3e3).toLocaleString("en"))} \u062F</b>`:"",v=h?`<details class="udet"><summary>\u0627\u0644\u062F\u0639\u0648\u0629 \u0648\u062A\u0641\u0627\u0635\u064A\u0644 \u0627\u0644\u062D\u0633\u0627\u0628${r.is_amb?" \u{1F393}":""}</summary><div class="sub">${M}${L}<br>\u0623\u064F\u0646\u0634\u0626 \u0627\u0644\u062D\u0633\u0627\u0628 ${fdate(r.created_at)}${r.last_login?"\u060C \u0622\u062E\u0631 \u062F\u062E\u0648\u0644 "+fdate(r.last_login):""}</div></details>`:"",g=`<span class="uch ${r.blocked?"bad":m?"ok":"off"}">${_}</span>`,k=h?`<details class="umore"><summary class="ib">\u0627\u0644\u0645\u0632\u064A\u062F \u25BE</summary><div class="umenu"><button class="ib" data-uamb="${esc(r.id)}">${r.is_amb?"\u0625\u0644\u063A\u0627\u0621 \u0627\u0644\u0633\u0641\u064A\u0631":"\u062A\u062D\u0648\u064A\u0644 \u0625\u0644\u0649 \u0633\u0641\u064A\u0631"}</button>${r.is_amb?`<button class="ib" data-upaid="${esc(r.id)}">\u062A\u0633\u062C\u064A\u0644 \u062F\u0641\u0639</button>`:""}<button class="ib" data-ucp="${esc(r.id)}">\u0646\u0633\u062E \u0627\u0644\u0645\u0639\u0644\u0648\u0645\u0627\u062A</button>${m?`<button class="ib" data-uchg="${esc(r.id)}">\u062A\u063A\u064A\u064A\u0631 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643</button><button class="ib del" data-ucan="${esc(r.id)}">\u0625\u0644\u063A\u0627\u0621 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643</button>`:""}<button class="ib" data-up="${esc(r.id)}">\u0643\u0644\u0645\u0629 \u0633\u0631 \u062C\u062F\u064A\u062F\u0629</button><button class="ib ${r.blocked?"":"del"}" data-ub="${esc(r.id)}">${r.blocked?"\u0631\u0641\u0639 \u0627\u0644\u0625\u064A\u0642\u0627\u0641":"\u0625\u064A\u0642\u0627\u0641"}</button><button class="ib del" data-udel="${esc(r.id)}">\u062D\u0630\u0641</button></div></details>`:"";return`<div class="item uc" style="--sc:${r.blocked?"#B93A32":m?"#1F5FBF":"#5A6B77"};align-items:flex-start"><div class="grow"><div class="nm">${esc(r.full_name||"\u0628\u062F\u0648\u0646 \u0627\u0633\u0645")}${r.role==="admin"?" (\u0623\u062F\u0645\u0646)":""} ${g}</div>
+      <div class="sub ucl"><bdi dir="ltr" style="user-select:all">@${esc(r.username||"")}</bdi>${r.phone?" \xB7 "+phoneHtml(r.phone):""}</div>${x}${q}${v}
+      <div class="acts3"><button class="ib" data-ur="${esc(r.id)}">\u062A\u062C\u062F\u064A\u062F</button>${!h&&Store.user&&r.id===Store.user.id?'<button class="ib" data-uapw="1">\u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631</button>':""}${h?`${y.length?`<button class="ib" data-uact="${esc(r.id)}">\u062A\u0641\u0639\u064A\u0644 \u0627\u0644\u0622\u0646</button>`:""}<button class="ib" data-ued="${esc(r.id)}">\u062A\u0639\u062F\u064A\u0644</button>`:""}${k}</div></div></div>`}).join("")+(d.length>b?`<button class="btn line block" id="umore">\u0639\u0631\u0636 \u0627\u0644\u0645\u0632\u064A\u062F (\u0627\u0644\u0645\u0639\u0631\u0648\u0636 ${ar(b)} \u0645\u0646 ${ar(d.length)})</button>`:""):'<div class="empty">\u0644\u0627 \u064A\u0648\u062C\u062F \u0637\u0644\u0627\u0628 \u0645\u0637\u0627\u0628\u0642\u0648\u0646.</div>';{const r=$("umore");r&&(r.onclick=()=>{A.un=b+40,renderUsers()})}t.querySelectorAll("[data-ur]").forEach(r=>r.onclick=()=>renewForm(USERS.find(u=>u.id===r.dataset.ur))),t.querySelectorAll("[data-uapw]").forEach(r=>r.onclick=adminPwForm),t.querySelectorAll("[data-ub]").forEach(r=>r.onclick=async()=>{const u=USERS.find(m=>m.id===r.dataset.ub);if(!u.blocked&&!await askConfirm("\u0625\u064A\u0642\u0627\u0641 \u0627\u0644\u062D\u0633\u0627\u0628","\u0633\u064A\u064F\u0645\u0646\u0639 \xAB"+(u.full_name||u.username)+"\xBB \u0645\u0646 \u0627\u0644\u062F\u062E\u0648\u0644 \u0644\u0644\u0645\u062D\u062A\u0648\u0649.","\u0623\u0648\u0642\u0641"))return;const f=await sb.rpc("admin_set_blocked",{p_user:u.id,p_blocked:!u.blocked});if(f.error){toast(errMsg(f.error));return}toast(u.blocked?"\u062A\u0645 \u0631\u0641\u0639 \u0627\u0644\u0625\u064A\u0642\u0627\u0641":"\u062A\u0645 \u0625\u064A\u0642\u0627\u0641 \u0627\u0644\u062D\u0633\u0627\u0628"),loadUsers()}),t.querySelectorAll("[data-ucan]").forEach(r=>r.onclick=()=>{const u=USERS.find(m=>m.id===r.dataset.ucan),f=n(u);f.length&&cancelSubForm(u,f)}),t.querySelectorAll("[data-uchg]").forEach(r=>r.onclick=()=>{const u=USERS.find(m=>m.id===r.dataset.uchg),f=n(u);f.length&&changeSubForm(u,f)}),t.querySelectorAll("[data-up]").forEach(r=>r.onclick=()=>resetPasswordForm(USERS.find(u=>u.id===r.dataset.up))),t.querySelectorAll("[data-uact]").forEach(r=>r.onclick=async()=>{const u=USERS.find(h=>h.id===r.dataset.uact),f=(u.codes||[])[0];if(!f||!await askConfirm("\u062A\u0641\u0639\u064A\u0644 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643","\u0633\u064A\u0628\u062F\u0623 \u0627\u0634\u062A\u0631\u0627\u0643 \xAB"+(u.full_name||u.username)+"\xBB \u0641\u064A \xAB"+spById(f.sp).n+"\xBB \u0627\u0644\u0622\u0646 \u0644\u0645\u062F\u0629 "+ar(f.days)+" \u064A\u0648\u0645.","\u0641\u0639\u0651\u0644"))return;r.disabled=!0;const m=await sb.rpc("admin_activate_code",{p_code:f.code});if(m.error){r.disabled=!1,toast(errMsg(m.error));return}toast("\u062A\u0645 \u062A\u0641\u0639\u064A\u0644 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643"),loadUsers()}),t.querySelectorAll("[data-ued]").forEach(r=>r.onclick=()=>editStudentForm(USERS.find(u=>u.id===r.dataset.ued))),t.querySelectorAll("[data-uamb]").forEach(r=>r.onclick=async()=>{const u=USERS.find(y=>y.id===r.dataset.uamb),f=!u.is_amb,m=u.full_name||u.username;if(!await askConfirm(f?"\u062A\u062D\u0648\u064A\u0644 \u0625\u0644\u0649 \u0633\u0641\u064A\u0631":"\u0625\u0644\u063A\u0627\u0621 \u0627\u0644\u0633\u0641\u064A\u0631",f?"\xAB"+m+"\xBB \u064A\u062D\u0635\u0644 \u0639\u0644\u0649 10 \u0623\u064A\u0627\u0645 \u0645\u062C\u0627\u0646\u064A\u0629 + 3,000 \u062F \u0639\u0646 \u0643\u0644 \u0627\u0634\u062A\u0631\u0627\u0643 \u062C\u062F\u064A\u062F \u0628\u0643\u0648\u062F\u0647\u060C \u0648\u0627\u0644\u0645\u062F\u0639\u0648 \u064A\u062D\u0635\u0644 \u0639\u0644\u0649 \u062E\u0635\u0645 30% \u0645\u0639 \u0627\u0644\u0623\u064A\u0627\u0645 \u0627\u0644\u062B\u0644\u0627\u062B\u0629 \u0627\u0644\u0645\u062C\u0627\u0646\u064A\u0629. \u064A\u0646\u0637\u0628\u0642 \u0639\u0644\u0649 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643\u0627\u062A \u0627\u0644\u0642\u0627\u062F\u0645\u0629 \u0641\u0642\u0637.":"\u062A\u0646\u062A\u0647\u064A \u0645\u0643\u0627\u0641\u0622\u062A \u0627\u0644\u0633\u0641\u064A\u0631 \u0644\u0644\u0627\u0634\u062A\u0631\u0627\u0643\u0627\u062A \u0627\u0644\u0642\u0627\u062F\u0645\u0629\u060C \u0648\u062A\u0628\u0642\u0649 \u0645\u0633\u062A\u062D\u0642\u0627\u062A\u0647 \u0627\u0644\u0633\u0627\u0628\u0642\u0629 \u0643\u0645\u0627 \u0647\u064A.",f?"\u062D\u0648\u0651\u0644":"\u0623\u0644\u063A\u0650"))return;const h=await sb.rpc("admin_set_ambassador",{p_user:u.id,p_on:f});if(h.error){toast(errMsg(h.error));return}toast(f?"\u062A\u0645 \u062A\u062D\u0648\u064A\u0644\u0647 \u0625\u0644\u0649 \u0633\u0641\u064A\u0631":"\u062A\u0645 \u0625\u0644\u063A\u0627\u0621 \u0627\u0644\u0633\u0641\u064A\u0631"),loadUsers()}),t.querySelectorAll("[data-upaid]").forEach(r=>r.onclick=()=>paidForm(USERS.find(u=>u.id===r.dataset.upaid))),t.querySelectorAll("[data-udel]").forEach(r=>r.onclick=async()=>{const u=USERS.find(m=>m.id===r.dataset.udel);if(!await askConfirm("\u062D\u0630\u0641 \u0627\u0644\u062D\u0633\u0627\u0628","\u0633\u064A\u064F\u062D\u0630\u0641 \u062D\u0633\u0627\u0628 \xAB"+(u.full_name||u.username)+"\xBB \u0646\u0647\u0627\u0626\u064A\u0627\u064B \u0645\u0639 \u0627\u0634\u062A\u0631\u0627\u0643\u0647 \u0648\u0645\u0644\u0627\u062D\u0638\u0627\u062A\u0647 \u0648\u062A\u0642\u062F\u0645\u0647. \u0644\u0627 \u064A\u0645\u0643\u0646 \u0627\u0644\u062A\u0631\u0627\u062C\u0639.","\u0627\u062D\u0630\u0641"))return;r.disabled=!0;const f=await sb.functions.invoke("student-admin",{body:{action:"delete",user_id:u.id}});if(f.error||f.data&&f.data.error){r.disabled=!1,toast("\u062A\u0639\u0630\u0631 \u062D\u0630\u0641 \u0627\u0644\u062D\u0633\u0627\u0628. \u062C\u0631\u0628 \u0645\u0631\u0629 \u062B\u0627\u0646\u064A\u0629.");return}imgCall("DELETE","/api/data?uid="+encodeURIComponent(u.id)).catch(()=>{}),toast("\u062A\u0645 \u062D\u0630\u0641 \u0627\u0644\u062D\u0633\u0627\u0628"),loadUsers()}),t.querySelectorAll("[data-ucp]").forEach(r=>r.onclick=()=>{const u=USERS.find(m=>m.id===r.dataset.ucp),f=["\u062D\u0633\u0627\u0628\u0643 \u0641\u064A Boardcard","\u0627\u0644\u0627\u0633\u0645: "+(u.full_name||""),"\u0627\u0633\u0645 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645: "+(u.username||"")];(u.subs||[]).forEach(m=>f.push(spById(m.sp).n+": \u0645\u0646 "+fdate(m.st||u.created_at)+" \u0625\u0644\u0649 "+fdate(m.exp))),copyText(f.join(`
+`))})}function exportUsers(){if(!USERS.length){toast("\u0627\u0646\u062A\u0638\u0631 \u062D\u062A\u0649 \u062A\u062A\u062D\u0645\u0651\u0644 \u0642\u0627\u0626\u0645\u0629 \u0627\u0644\u0637\u0644\u0627\u0628.");return}const t=Date.now(),e=i=>(i=String(i??""),/^[=+\-@\t\r]/.test(i)&&(i="'"+i),/[",\n\r]/.test(i)?'"'+i.replace(/"/g,'""')+'"':i),s=i=>{if(!i)return"";const l=new Date(i);return isNaN(l)?"":l.toISOString().slice(0,10)},n=[["name","username","role","status","created","last_login","subscriptions","ref_code","referrals","ambassador"].join(",")].concat(USERS.map(i=>{const l=i.subs||[],o=l.filter(p=>new Date(p.exp)>t),c=i.blocked?"blocked":o.length?"active":l.length?"expired":(i.codes||[]).length?"pending":"none";return[i.full_name||"",i.username||"",i.role||"student",c,s(i.created_at),s(i.last_login),l.map(p=>spById(p.sp).n+" ("+s(p.exp)+")").join(" | "),i.ref_code||"",i.ref_cnt||0,i.is_amb?"yes":"no"].map(e).join(",")}));downloadFile("boardcard-students-"+new Date().toISOString().slice(0,10)+".csv","\uFEFF"+n.join(`\r
+`),"text/csv;charset=utf-8"),toast("\u062A\u0645 \u062A\u0635\u062F\u064A\u0631 "+ar(USERS.length)+" \u062D\u0633\u0627\u0628")}function renewForm(t){if(!Store.specialties.length){toast("\u0623\u0636\u0641 \u0627\u062E\u062A\u0635\u0627\u0635\u0627\u064B \u0623\u0648\u0644\u0627\u064B");return}const e=t.role!=="admin",s=t.subs||[],a=l=>s.some(o=>o.sp===l),n=s[0]?s[0].sp:Store.specialties[0].id;showModal(`<button class="x" id="cl" aria-label="\u0625\u063A\u0644\u0627\u0642">\u2715</button><h2>\u062A\u062C\u062F\u064A\u062F \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643</h2>
+    <p class="hint" style="margin:0 0 8px">${esc(t.full_name||t.username)}</p>
+    <label class="fld"><span>\u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635</span><select class="in" id="rsp">${Store.specialties.map(l=>`<option value="${esc(l.id)}" ${l.id===n?"selected":""}>${esc(l.n)}</option>`).join("")}</select></label>
+    <label class="fld"><span>\u0627\u0644\u0645\u062F\u0629 \u0628\u0627\u0644\u0623\u064A\u0627\u0645</span><input class="in" id="rdd" type="number" min="1" max="365" value="30" style="direction:ltr;text-align:center"></label>
+    ${e?'<label class="fld"><span>\u0637\u0631\u064A\u0642\u0629 \u0627\u0644\u062A\u062C\u062F\u064A\u062F</span><select class="in" id="rmd"><option value="now">\u062A\u0645\u062F\u064A\u062F \u0645\u0628\u0627\u0634\u0631 \u0627\u0644\u0622\u0646 (\u0628\u062F\u0648\u0646 \u0643\u0648\u062F)</option><option value="code">\u0643\u0648\u062F \u062A\u0641\u0639\u064A\u0644 \u0623\u0639\u0637\u064A\u0647 \u0644\u0644\u0637\u0627\u0644\u0628</option></select></label><p class="hint" id="rhn"></p>':""}
+    ${priceField("rpr","\u0627\u0644\u0645\u0628\u0644\u063A \u0627\u0644\u0645\u062F\u0641\u0648\u0639 \u0628\u0627\u0644\u062F\u064A\u0646\u0627\u0631 (\u0644\u0644\u0625\u064A\u0631\u0627\u062F)")}
+    <p class="err" id="er" role="alert"></p><button class="btn block" id="rgo">\u062A\u062C\u062F\u064A\u062F</button>`),$("cl").onclick=closeModal,bindPriceChips();const i=()=>{if(!e)return;const l=a($("rsp").value);$("rmd").value=l?"now":"code",$("rhn").textContent=l?"\u0627\u0644\u062A\u0645\u062F\u064A\u062F \u0627\u0644\u0645\u0628\u0627\u0634\u0631 \u064A\u0636\u064A\u0641 \u0627\u0644\u0645\u062F\u0629 \u0645\u0646 \u062A\u0627\u0631\u064A\u062E \u0627\u0646\u062A\u0647\u0627\u0621 \u0627\u0634\u062A\u0631\u0627\u0643\u0647 \u0627\u0644\u062D\u0627\u0644\u064A (\u0623\u0648 \u0645\u0646 \u0627\u0644\u064A\u0648\u0645 \u0625\u0646 \u0643\u0627\u0646 \u0645\u0646\u062A\u0647\u064A\u0627\u064B).":"\u0644\u064A\u0633 \u0644\u062F\u064A\u0647 \u0627\u0634\u062A\u0631\u0627\u0643 \u0641\u064A \u0647\u0630\u0627 \u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635\u060C \u0641\u0627\u0644\u0623\u0641\u0636\u0644 \u0625\u0646\u0634\u0627\u0621 \u0643\u0648\u062F \u062A\u0641\u0639\u064A\u0644 \u0644\u0647."};$("rsp").onchange=i,i(),$("rgo").onclick=async()=>{const l=$("rsp").value,o=parseInt($("rdd").value,10),c=e?$("rmd").value:"now";if(!(o>=1&&o<=365)){$("er").textContent="\u0627\u0644\u0645\u062F\u0629 \u0645\u0646 1 \u0625\u0644\u0649 365 \u064A\u0648\u0645.";return}const p=readPrice("rpr");if(p===null){$("er").textContent="\u0627\u0643\u062A\u0628 \u0627\u0644\u0645\u0628\u0644\u063A \u0627\u0644\u0645\u062F\u0641\u0648\u0639 (0 \u0625\u0630\u0627 \u0645\u062C\u0627\u0646\u064A).";return}if($("rgo").disabled=!0,$("er").textContent="",c==="now"){const d=s.find(u=>u.sp===l),b=Math.max(Date.now(),d?+new Date(d.exp):0),r=await sb.rpc("admin_extend_sale",{p_user:t.id,p_specialty:l,p_days:o,p_price:p});if(r.error){$("er").textContent=errMsg(r.error),$("rgo").disabled=!1;return}rememberPrice(p),closeModal(),toast("\u062A\u0645 \u062A\u0645\u062F\u064A\u062F \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643 "+ar(o)+" \u064A\u0648\u0645\u0627\u064B"),loadUsers()}else{const d=await sb.rpc("admin_make_codes",{p_specialty:l,p_count:1,p_days:o,p_note:"\u062A\u062C\u062F\u064A\u062F",p_user:t.id,p_kind:"renew",p_price:p,p_sale_note:null});if(d.error){$("er").textContent=errMsg(d.error),$("rgo").disabled=!1;return}rememberPrice(p);const b=spById(l).n;showCredentials("\u0643\u0648\u062F \u0644\u0640 "+(t.full_name||t.username),[["\u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635",b],["\u0631\u0645\u0632 \u0627\u0644\u062A\u0641\u0639\u064A\u0644",d.data[0]]],"\u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635: "+b+`
+\u0631\u0645\u0632 \u0627\u0644\u062A\u0641\u0639\u064A\u0644: `+d.data[0]+`
+\u0627\u0644\u0645\u062F\u0629: `+o+" \u064A\u0648\u0645"),loadUsers()}}}async function endSub(t,e){const s=await sb.rpc("admin_set_expiry",{p_user:t.id,p_specialty:e,p_expires:new Date(Date.now()-6e4).toISOString()});if(!s.error)return null;if(!(s.error.code==="PGRST202"||s.error.code==="42883"))return s.error;const a=await sb.from("subscriptions").delete().eq("user_id",t.id).eq("specialty_id",e).select();return a.error||!(a.data&&a.data.length)?s.error:null}function cancelSubForm(t,e){const s=t.full_name||t.username;showModal(`<button class="x" id="cl" aria-label="\u0625\u063A\u0644\u0627\u0642">\u2715</button><h2>\u0625\u0644\u063A\u0627\u0621 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643</h2>
+    <p class="hint" style="margin:0 0 8px">${esc(s)}</p>
+    <label class="fld"><span>\u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643 \u0627\u0644\u0645\u0631\u0627\u062F \u0625\u0644\u063A\u0627\u0624\u0647</span><select class="in" id="cks">${e.map(a=>`<option value="${esc(a.sp)}">${esc(spById(a.sp).n)} (\u064A\u0646\u062A\u0647\u064A ${fdate(a.exp)})</option>`).join("")}</select></label>
+    <p class="hint">\u064A\u064F\u0646\u0647\u0649 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643 \u0641\u0648\u0631\u0627\u064B \u0648\u064A\u0641\u0642\u062F \u0627\u0644\u0637\u0627\u0644\u0628 \u0627\u0644\u0648\u0635\u0648\u0644 \u0644\u0647\u0630\u0627 \u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635. \u064A\u0628\u0642\u0649 \u062D\u0633\u0627\u0628\u0647 \u0648\u062A\u0642\u062F\u0645\u0647 \u0648\u0645\u0644\u0627\u062D\u0638\u0627\u062A\u0647 \u0643\u0645\u0627 \u0647\u064A.</p>
+    <p class="err" id="er" role="alert"></p><button class="btn bad block" id="ckgo">\u0625\u0644\u063A\u0627\u0621 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643</button>`),$("cl").onclick=closeModal,$("ckgo").onclick=async()=>{const a=$("cks").value;if(!await askConfirm("\u0625\u0644\u063A\u0627\u0621 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643","\u0633\u064A\u064F\u0646\u0647\u0649 \u0627\u0634\u062A\u0631\u0627\u0643 \xAB"+s+"\xBB \u0641\u064A \xAB"+spById(a).n+"\xBB \u0627\u0644\u0622\u0646 \u0648\u0644\u0627 \u064A\u0645\u0643\u0646 \u0627\u0633\u062A\u0631\u062C\u0627\u0639 \u0627\u0644\u0645\u062F\u0629 \u0627\u0644\u0645\u062A\u0628\u0642\u064A\u0629 \u0625\u0644\u0627 \u0628\u062A\u0645\u062F\u064A\u062F \u062C\u062F\u064A\u062F.","\u0623\u0644\u063A\u0650 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643"))return;const n=await endSub(t,a);if(n){toast(errMsg(n));return}toast("\u062A\u0645 \u0625\u0644\u063A\u0627\u0621 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643"),loadUsers()}}function changeSubForm(t,e){const s=t.full_name||t.username;if(!Store.specialties.length){toast("\u0623\u0636\u0641 \u0627\u062E\u062A\u0635\u0627\u0635\u0627\u064B \u0623\u0648\u0644\u0627\u064B");return}const a=i=>Math.min(365,Math.max(1,Math.ceil((new Date(i.exp)-Date.now())/864e5))),n=(Store.specialties.find(i=>i.id!==e[0].sp)||Store.specialties[0]).id;showModal(`<button class="x" id="cl" aria-label="\u0625\u063A\u0644\u0627\u0642">\u2715</button><h2>\u062A\u063A\u064A\u064A\u0631 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643</h2>
+    <p class="hint" style="margin:0 0 8px">${esc(s)}</p>
+    <label class="fld"><span>\u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643 \u0627\u0644\u062D\u0627\u0644\u064A (\u064A\u064F\u0646\u0647\u0649 \u0641\u0648\u0631\u0627\u064B)</span><select class="in" id="cgo">${e.map(i=>`<option value="${esc(i.sp)}">${esc(spById(i.sp).n)} (\u064A\u0646\u062A\u0647\u064A ${fdate(i.exp)})</option>`).join("")}</select></label>
+    <label class="fld"><span>\u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635 \u0627\u0644\u062C\u062F\u064A\u062F</span><select class="in" id="cgn">${Store.specialties.map(i=>`<option value="${esc(i.id)}" ${i.id===n?"selected":""}>${esc(i.n)}</option>`).join("")}</select></label>
+    <label class="fld"><span>\u0645\u062F\u0629 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643 \u0627\u0644\u062C\u062F\u064A\u062F \u0628\u0627\u0644\u0623\u064A\u0627\u0645</span><input class="in" id="cgd" type="number" min="1" max="365" value="${a(e[0])}" style="direction:ltr;text-align:center"></label>
+    <p class="hint">\u0627\u0644\u0642\u064A\u0645\u0629 \u0627\u0644\u0627\u0641\u062A\u0631\u0627\u0636\u064A\u0629 \u0647\u064A \u0627\u0644\u0623\u064A\u0627\u0645 \u0627\u0644\u0645\u062A\u0628\u0642\u064A\u0629 \u0645\u0646 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643 \u0627\u0644\u0642\u062F\u064A\u0645\u060C \u0648\u064A\u0645\u0643\u0646\u0643 \u062A\u0639\u062F\u064A\u0644\u0647\u0627. \u064A\u0628\u062F\u0623 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643 \u0627\u0644\u062C\u062F\u064A\u062F \u0641\u0648\u0631\u0627\u064B.</p>
+    <p class="err" id="er" role="alert"></p><button class="btn block" id="cggo">\u062A\u063A\u064A\u064A\u0631 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643</button>`),$("cl").onclick=closeModal,$("cgo").onchange=()=>{const i=e.find(l=>l.sp===$("cgo").value);i&&($("cgd").value=a(i))},$("cggo").onclick=async()=>{const i=$("cgo").value,l=$("cgn").value,o=parseInt($("cgd").value,10);if(i===l){$("er").textContent="\u0627\u062E\u062A\u0631 \u0627\u062E\u062A\u0635\u0627\u0635\u0627\u064B \u0645\u062E\u062A\u0644\u0641\u0627\u064B \u0639\u0646 \u0627\u0644\u062D\u0627\u0644\u064A.";return}if(!(o>=1&&o<=365)){$("er").textContent="\u0627\u0644\u0645\u062F\u0629 \u0645\u0646 1 \u0625\u0644\u0649 365 \u064A\u0648\u0645.";return}$("cggo").disabled=!0,$("er").textContent="";const c=await sb.rpc("admin_change_sub",{p_user:t.id,p_old:i,p_new:l,p_days:o});if(c.error){$("er").textContent=errMsg(c.error),$("cggo").disabled=!1;return}closeModal(),toast("\u062A\u0645 \u062A\u063A\u064A\u064A\u0631 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643"),loadUsers()}}function pickSpecialty(t,e,s,a){if(!Store.specialties.length){toast("\u0623\u0636\u0641 \u0627\u062E\u062A\u0635\u0627\u0635\u0627\u064B \u0623\u0648\u0644\u0627\u064B");return}const n=s&&(s.subs||[])[0]?s.subs[0].sp:Store.specialties[0].id;showModal(`<button class="x" id="cl" aria-label="\u0625\u063A\u0644\u0627\u0642">\u2715</button><h2>${esc(t)}</h2>
+    <label class="fld"><span>\u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635</span><select class="in" id="pk">${Store.specialties.map(i=>`<option value="${esc(i.id)}" ${i.id===n?"selected":""}>${esc(i.n)}</option>`).join("")}</select></label>
+    ${e?'<label class="fld"><span>\u0627\u0644\u0645\u062F\u0629 \u0628\u0627\u0644\u0623\u064A\u0627\u0645</span><input class="in" id="pd" type="number" min="1" max="365" value="30" style="direction:ltr;text-align:center"></label>':""}
+    ${priceField("ppr","\u0627\u0644\u0645\u0628\u0644\u063A \u0627\u0644\u0645\u062F\u0641\u0648\u0639 \u0628\u0627\u0644\u062F\u064A\u0646\u0627\u0631 (\u0644\u0644\u0625\u064A\u0631\u0627\u062F)")}
+    <p class="err" id="er" role="alert"></p><button class="btn block" id="go">\u0645\u062A\u0627\u0628\u0639\u0629</button>`),$("cl").onclick=closeModal,bindPriceChips(),$("go").onclick=()=>{const i=e?parseInt($("pd").value,10):30;if(!(i>=1&&i<=365)){$("er").textContent="\u0627\u0644\u0645\u062F\u0629 \u0645\u0646 1 \u0625\u0644\u0649 365 \u064A\u0648\u0645.";return}const l=readPrice("ppr");if(l===null){$("er").textContent="\u0627\u0643\u062A\u0628 \u0627\u0644\u0645\u0628\u0644\u063A \u0627\u0644\u0645\u062F\u0641\u0648\u0639 (0 \u0625\u0630\u0627 \u0645\u062C\u0627\u0646\u064A).";return}const o=$("pk").value;closeModal(),a({sp:o,days:i,price:l})}}const genPass=()=>{const t="abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789",e=crypto.getRandomValues(new Uint8Array(10));let s="";return e.forEach(a=>{s+=t[a%t.length]}),s};async function copyText(t){try{await navigator.clipboard.writeText(t),toast("\u062A\u0645 \u0627\u0644\u0646\u0633\u062E")}catch{toast("\u062D\u062F\u062F \u0627\u0644\u0646\u0635 \u0648\u0627\u0646\u0633\u062E\u0647 \u064A\u062F\u0648\u064A\u0627\u064B")}}function showCredentials(t,e,s){showModal(`<button class="x" id="cl" aria-label="\u0625\u063A\u0644\u0627\u0642">\u2715</button><h2>${esc(t)}</h2>
+    ${e.map(a=>`<div class="fld"><span>${esc(a[0])}</span><div class="in" dir="ltr" style="text-align:start;font-family:ui-monospace,Menlo,monospace;font-size:17px;user-select:all">${esc(a[1])}</div></div>`).join("")}
+    <button class="btn block" id="cpm">\u0646\u0633\u062E \u0627\u0644\u0631\u0633\u0627\u0644\u0629 \u0643\u0627\u0645\u0644\u0629</button>
+    ${e.some(a=>/كلمة السر/.test(a[0]))?'<p class="hint" style="margin-top:10px">\u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631 \u0644\u0627 \u062A\u064F\u062D\u0641\u0638 \u0648\u0644\u0646 \u062A\u0638\u0647\u0631 \u0645\u0631\u0629 \u062B\u0627\u0646\u064A\u0629. \u0627\u0646\u0633\u062E \u0627\u0644\u0631\u0633\u0627\u0644\u0629 \u0627\u0644\u0622\u0646 \u0648\u0623\u0631\u0633\u0644\u0647\u0627 \u0644\u0644\u0637\u0627\u0644\u0628\u060C \u0648\u0625\u0630\u0627 \u0636\u0627\u0639\u062A \u0623\u0646\u0634\u0626 \u0644\u0647 \u0643\u0644\u0645\u0629 \u0633\u0631 \u062C\u062F\u064A\u062F\u0629.</p>':""}`),$("cl").onclick=closeModal,$("cpm").onclick=()=>copyText(s)}function phoneHtml(t){if(t=String(t||"").trim(),!t)return"";const e=t.replace(/^\+/,"").replace(/^00/,"").replace(/^0/,"964");return`<bdi dir="ltr" style="user-select:all">${esc(t)}</bdi> \xB7 <a href="tel:${esc(t)}">\u0627\u062A\u0635\u0627\u0644</a> \xB7 <a href="https://wa.me/${esc(e)}" target="_blank" rel="noopener noreferrer">\u0648\u0627\u062A\u0633\u0627\u0628</a>`}function adminPwForm(){showModal(`<button class="x" id="cl" aria-label="\u0625\u063A\u0644\u0627\u0642">\u2715</button><h2>\u062A\u063A\u064A\u064A\u0631 \u0643\u0644\u0645\u0629 \u0633\u0631 \u0627\u0644\u0623\u062F\u0645\u0646</h2>
+    <label class="fld"><span>\u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631 \u0627\u0644\u062D\u0627\u0644\u064A\u0629</span><input class="in" id="pw0" type="password" autocomplete="current-password" style="direction:ltr;text-align:left"></label>
+    <label class="fld"><span>\u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631 \u0627\u0644\u062C\u062F\u064A\u062F\u0629 (8 \u0623\u062D\u0631\u0641 \u0639\u0644\u0649 \u0627\u0644\u0623\u0642\u0644)</span><input class="in" id="pw1" type="password" autocomplete="new-password" maxlength="72" style="direction:ltr;text-align:left"></label>
+    <label class="fld"><span>\u0623\u0639\u062F \u0643\u062A\u0627\u0628\u0629 \u0627\u0644\u062C\u062F\u064A\u062F\u0629</span><input class="in" id="pw2" type="password" autocomplete="new-password" maxlength="72" style="direction:ltr;text-align:left"></label>
+    <p class="err" id="er" role="alert"></p><button class="btn block" id="pwgo">\u062A\u063A\u064A\u064A\u0631</button>`),$("cl").onclick=closeModal,$("pwgo").onclick=async()=>{const t=$("pw0").value,e=$("pw1").value,s=$("pw2").value,a=$("er");if(!t){a.textContent="\u0627\u0643\u062A\u0628 \u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631 \u0627\u0644\u062D\u0627\u0644\u064A\u0629.";return}if(e.length<8||e.length>72){a.textContent="\u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631 \u0627\u0644\u062C\u062F\u064A\u062F\u0629 \u0645\u0646 8 \u0625\u0644\u0649 72 \u062D\u0631\u0641\u0627\u064B.";return}if(e!==s){a.textContent="\u0643\u0644\u0645\u062A\u0627 \u0627\u0644\u0633\u0631 \u0627\u0644\u062C\u062F\u064A\u062F\u062A\u0627\u0646 \u063A\u064A\u0631 \u0645\u062A\u0637\u0627\u0628\u0642\u062A\u064A\u0646.";return}if(e===t){a.textContent="\u0627\u062E\u062A\u0631 \u0643\u0644\u0645\u0629 \u0633\u0631 \u0645\u062E\u062A\u0644\u0641\u0629 \u0639\u0646 \u0627\u0644\u062D\u0627\u0644\u064A\u0629.";return}$("pwgo").disabled=!0,a.textContent="";try{const n=Store.user&&Store.user.email,i=window.supabase.createClient(SB_URL,SB_KEY,{auth:{persistSession:!1,autoRefreshToken:!1,detectSessionInUrl:!1,storageKey:"sb-pwcheck"}}),l=await i.auth.signInWithPassword({email:n,password:t});try{await i.auth.signOut({scope:"local"})}catch{}if(l.error){a.textContent="\u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631 \u0627\u0644\u062D\u0627\u0644\u064A\u0629 \u063A\u064A\u0631 \u0635\u062D\u064A\u062D\u0629.",$("pwgo").disabled=!1;return}const o=await sb.auth.updateUser({password:e});if(o.error){a.textContent=/same|different/i.test(o.error.message||"")?"\u0627\u062E\u062A\u0631 \u0643\u0644\u0645\u0629 \u0633\u0631 \u0645\u062E\u062A\u0644\u0641\u0629 \u0639\u0646 \u0627\u0644\u062D\u0627\u0644\u064A\u0629.":"\u062A\u0639\u0630\u0631 \u062A\u063A\u064A\u064A\u0631 \u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631. \u062C\u0631\u0628 \u0645\u0631\u0629 \u062B\u0627\u0646\u064A\u0629.",$("pwgo").disabled=!1;return}closeModal(),toast("\u062A\u0645 \u062A\u063A\u064A\u064A\u0631 \u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631")}catch{a.textContent="\u062A\u0639\u0630\u0631 \u0627\u0644\u0627\u062A\u0635\u0627\u0644. \u062C\u0631\u0628 \u0645\u0631\u0629 \u062B\u0627\u0646\u064A\u0629.",$("pwgo").disabled=!1}}}function createStudentForm(){if(!Store.specialties.length){toast("\u0623\u0636\u0641 \u0627\u062E\u062A\u0635\u0627\u0635\u0627\u064B \u0623\u0648\u0644\u0627\u064B");return}const t=genPass();showModal(`<button class="x" id="cl" aria-label="\u0625\u063A\u0644\u0627\u0642">\u2715</button><h2>\u062D\u0633\u0627\u0628 \u0637\u0627\u0644\u0628 \u062C\u062F\u064A\u062F</h2>
+    <label class="fld"><span>\u0627\u0633\u0645 \u0627\u0644\u0637\u0627\u0644\u0628</span><input class="in" id="sn" maxlength="60"></label>
+    <label class="fld"><span>\u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635 \u0627\u0644\u0645\u0634\u062A\u0631\u0643 \u0628\u0647</span><select class="in" id="ssp">${Store.specialties.map(e=>`<option value="${esc(e.id)}">${esc(e.n)}</option>`).join("")}</select></label>
+    <label class="fld"><span>\u0627\u0633\u0645 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645 (\u0625\u0646\u0643\u0644\u064A\u0632\u064A \u0628\u062F\u0648\u0646 \u0645\u0633\u0627\u0641\u0627\u062A)</span><input class="in" id="su" autocapitalize="none" spellcheck="false" maxlength="30" style="direction:ltr;text-align:left"></label>
+    <label class="fld"><span>\u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631 (8 \u0623\u062D\u0631\u0641 \u0639\u0644\u0649 \u0627\u0644\u0623\u0642\u0644)</span><input class="in" id="sp2" value="${t}" style="direction:ltr;text-align:left;font-family:ui-monospace,Menlo,monospace"></label>
+    <label class="fld"><span>\u0645\u062F\u0629 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643 \u0628\u0627\u0644\u0623\u064A\u0627\u0645</span><input class="in" id="sd" type="number" min="1" max="365" value="30" style="direction:ltr;text-align:center"></label>
+    <label class="fld"><span>\u0631\u0642\u0645 \u0627\u0644\u0647\u0627\u062A\u0641 (\u0627\u062E\u062A\u064A\u0627\u0631\u064A): \u0644\u0644\u062A\u0648\u0627\u0635\u0644 \u0645\u0639 \u0627\u0644\u0637\u0627\u0644\u0628 \u0625\u0630\u0627 \u062D\u0635\u0644 \u0634\u0643 \u0641\u064A \u0645\u0634\u0627\u0631\u0643\u0629 \u0627\u0644\u062D\u0633\u0627\u0628\u060C \u0648\u0644\u0627 \u064A\u0631\u0627\u0647 \u063A\u064A\u0631\u0643</span><input class="in" id="sph" type="tel" inputmode="tel" autocomplete="off" maxlength="20" placeholder="07xxxxxxxxx" style="direction:ltr;text-align:left"></label>
+    ${priceField("spr","\u0627\u0644\u0645\u0628\u0644\u063A \u0627\u0644\u0645\u062F\u0641\u0648\u0639 \u0628\u0627\u0644\u062F\u064A\u0646\u0627\u0631 (\u0644\u0644\u0625\u064A\u0631\u0627\u062F)")}
+    <label class="fld"><span>\u0643\u0648\u062F \u0627\u0644\u062F\u0627\u0639\u064A (\u0627\u062E\u062A\u064A\u0627\u0631\u064A): \u0639\u0627\u062F\u064A = \u0627\u0644\u062F\u0627\u0639\u064A 7 \u0623\u064A\u0627\u0645 \u0648\u0627\u0644\u0637\u0627\u0644\u0628 3 \u0623\u064A\u0627\u0645. \u0633\u0641\u064A\u0631 = \u0627\u0644\u062F\u0627\u0639\u064A 10 \u0623\u064A\u0627\u0645 + 3,000 \u062F \u0648\u0627\u0644\u0637\u0627\u0644\u0628 3 \u0623\u064A\u0627\u0645 + \u062E\u0635\u0645 30% (\u062A\u0637\u0628\u0642\u0647 \u0623\u0646\u062A \u0639\u0646\u062F \u0627\u0644\u062F\u0641\u0639)</span><input class="in" id="sref" autocapitalize="characters" spellcheck="false" maxlength="10" placeholder="\u0645\u062B\u0644\u0627\u064B K7M2QX" style="direction:ltr;text-align:left;text-transform:uppercase"></label>
+    <p class="err" id="er" role="alert"></p><button class="btn block" id="sv">\u0625\u0646\u0634\u0627\u0621 \u0627\u0644\u062D\u0633\u0627\u0628 \u0648\u0627\u0644\u0643\u0648\u062F</button>`),$("cl").onclick=closeModal,$("sv").onclick=async()=>{const e=$("ssp").value,s=$("sn").value.trim(),a=$("su").value.trim().toLowerCase(),n=$("sp2").value,i=parseInt($("sd").value,10),l=$("sref").value.trim().toUpperCase(),o=$("sph").value.trim();if(!/^[a-z0-9._-]{3,30}$/.test(a)){$("er").textContent="\u0627\u0633\u0645 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645: 3 \u0625\u0644\u0649 30 \u062D\u0631\u0641\u0627\u064B \u0625\u0646\u0643\u0644\u064A\u0632\u064A\u0627\u064B \u0623\u0648 \u0623\u0631\u0642\u0627\u0645\u0627\u064B \u0623\u0648 . _ -";return}if(o&&!/^\+?[0-9\u0660-\u0669\s\-()]{7,20}$/.test(o)){$("er").textContent="\u0631\u0642\u0645 \u0627\u0644\u0647\u0627\u062A\u0641 \u063A\u064A\u0631 \u0635\u062D\u064A\u062D. \u0627\u062A\u0631\u0643\u0647 \u0641\u0627\u0631\u063A\u0627\u064B \u0625\u0646 \u0644\u0645 \u064A\u062A\u0648\u0641\u0631.";return}if(n.length<8){$("er").textContent="\u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631 8 \u0623\u062D\u0631\u0641 \u0639\u0644\u0649 \u0627\u0644\u0623\u0642\u0644.";return}if(!(i>=1&&i<=365)){$("er").textContent="\u0627\u0644\u0645\u062F\u0629 \u0645\u0646 1 \u0625\u0644\u0649 365 \u064A\u0648\u0645.";return}const c=readPrice("spr");if(c===null){$("er").textContent="\u0627\u0643\u062A\u0628 \u0627\u0644\u0645\u0628\u0644\u063A \u0627\u0644\u0645\u062F\u0641\u0648\u0639 (0 \u0625\u0630\u0627 \u0645\u062C\u0627\u0646\u064A).";return}$("sv").disabled=!0;const p=await sb.functions.invoke("student-admin",{body:{action:"create",username:a,password:n,full_name:s,days:i,specialty_id:e,ref_code:l,price:c,phone:o}});let d=p.error?"\u062A\u0639\u0630\u0631 \u0625\u0646\u0634\u0627\u0621 \u0627\u0644\u062D\u0633\u0627\u0628. \u062C\u0631\u0628 \u0645\u0631\u0629 \u062B\u0627\u0646\u064A\u0629.":null,b=p.data;if(p.error&&p.error.context&&p.error.context.json)try{b=await p.error.context.json()}catch{}if(b&&b.error&&(d={username_taken:"\u0627\u0633\u0645 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645 \u0645\u0633\u062A\u062E\u062F\u0645 \u0645\u0646 \u0642\u0628\u0644.",bad_username:"\u0627\u0633\u0645 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D.",bad_password:"\u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D\u0629.",forbidden:"\u0645\u0627 \u0639\u0646\u062F\u0643 \u0635\u0644\u0627\u062D\u064A\u0629.",create_failed:"\u062A\u0639\u0630\u0631 \u0625\u0646\u0634\u0627\u0621 \u0627\u0644\u062D\u0633\u0627\u0628. \u062C\u0631\u0628 \u0627\u0633\u0645 \u0645\u0633\u062A\u062E\u062F\u0645 \u0622\u062E\u0631.",bad_specialty:"\u0627\u062E\u062A\u0631 \u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635.",bad_ref:"\u0643\u0648\u062F \u0627\u0644\u062F\u0627\u0639\u064A \u063A\u064A\u0631 \u0635\u062D\u064A\u062D.",bad_phone:"\u0631\u0642\u0645 \u0627\u0644\u0647\u0627\u062A\u0641 \u063A\u064A\u0631 \u0635\u062D\u064A\u062D. \u0627\u062A\u0631\u0643\u0647 \u0641\u0627\u0631\u063A\u0627\u064B \u0625\u0646 \u0644\u0645 \u064A\u062A\u0648\u0641\u0631."}[b.error]||d),d||!b||!b.code){$("er").textContent=d||"\u062A\u0639\u0630\u0631 \u0625\u0646\u0634\u0627\u0621 \u0627\u0644\u062D\u0633\u0627\u0628.",$("sv").disabled=!1;return}b.sale?rememberPrice(c):await recordSale({kind:"student",sp:e,days:i,qty:1,price:c,note:s});const r=spById(e).n;showCredentials("\u062A\u0645 \u0625\u0646\u0634\u0627\u0621 \u0627\u0644\u062D\u0633\u0627\u0628",[["\u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635",r],["\u0627\u0633\u0645 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645",b.username],["\u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631",b.password],["\u0631\u0645\u0632 \u0627\u0644\u062A\u0641\u0639\u064A\u0644",b.code]],`\u062D\u0633\u0627\u0628\u0643 \u0641\u064A Boardcard
+\u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635: `+r+`
+\u0627\u0633\u0645 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645: `+b.username+`
+\u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631: `+b.password+`
+\u0631\u0645\u0632 \u0627\u0644\u062A\u0641\u0639\u064A\u0644: `+b.code+`
+\u0645\u062F\u0629 \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643: `+b.days+" \u064A\u0648\u0645"),loadUsers()},bindPriceChips(),$("sn").focus()}function paidForm(t){const e=t.ref_amb||0;showModal(`<button class="x" id="cl" aria-label="\u0625\u063A\u0644\u0627\u0642">\u2715</button><h2>\u062A\u0633\u062C\u064A\u0644 \u062F\u0641\u0639 \u0644\u0644\u0633\u0641\u064A\u0631</h2>
+    <p>${esc(t.full_name||t.username)}: \u0644\u0647 ${ar(e)} \u0627\u0634\u062A\u0631\u0627\u0643 \u0645\u0633\u062A\u062D\u0642\u060C \u0648\u0633\u064F\u062C\u0651\u0644 \u0623\u0646\u0643 \u062F\u0641\u0639\u062A \u0644\u0647 \u0639\u0646 ${ar(t.ref_paid||0)}.</p>
+    <label class="fld"><span>\u0639\u062F\u062F \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643\u0627\u062A \u0627\u0644\u0645\u062F\u0641\u0648\u0639 \u0639\u0646\u0647\u0627 (\u0645\u0646 ${ar(e)})</span><input class="in" id="pdn" type="number" min="0" max="${e}" value="${t.ref_paid||0}" style="direction:ltr;text-align:center"></label>
+    <p class="hint">\u0627\u0644\u0645\u062A\u0628\u0642\u064A = (\u0627\u0644\u0645\u0633\u062A\u062D\u0642 - \u0627\u0644\u0645\u062F\u0641\u0648\u0639) \xD7 3,000 \u062F\u064A\u0646\u0627\u0631.</p>
     <p class="err" id="er" role="alert"></p>
-    <div class="r2"><button class="btn" id="pds">حفظ</button><button class="btn line" id="pda">دفعت الكل</button></div>`);
-  $('cl').onclick=closeModal;
-  const save=async n=>{
-    const r=await sb.rpc('admin_set_ref_paid',{p_user:u.id,p_paid:n});
-    if(r.error){$('er').textContent=/bad_paid/.test(r.error.message||'')?'الرقم يجب أن يكون بين 0 وعدد الاشتراكات المستحقة.':errMsg(r.error);return}
-    closeModal();toast('تم تسجيل الدفع');loadUsers();
-  };
-  $('pds').onclick=()=>save(parseInt($('pdn').value,10)||0);
-  $('pda').onclick=()=>save(max);
-}
-function checkRefForm(){
-  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>التحقق من كود إحالة</h2>
-    <p class="hint">اكتب الكود الذي أعطاك إياه الطالب لتعرف هل صاحبه سفير (خصم 30%) أم داعٍ عادي (بدون خصم).</p>
-    <label class="fld"><span>كود الإحالة</span><input class="in" id="rcc" autocapitalize="characters" spellcheck="false" maxlength="10" style="direction:ltr;text-align:center;text-transform:uppercase"></label>
-    <button class="btn block" id="rcg">تحقق</button><div id="rcr" style="margin-top:12px"></div>`);
-  $('cl').onclick=closeModal;
-  const go=async()=>{
-    const code=$('rcc').value.trim().toUpperCase();if(code.length<4)return;
-    $('rcr').innerHTML='<p class="hint">جارٍ التحقق…</p>';
-    const r=await sb.rpc('admin_check_ref',{p_code:code});
-    const d=r.data&&(Array.isArray(r.data)?r.data[0]:r.data);
-    if(r.error||!d){$('rcr').innerHTML='<p class="err">تعذر التحقق. جرب مرة ثانية.</p>';return}
-    const nm=esc(d.name||d.username||'');
-    $('rcr').innerHTML=!d.found?'<div class="banner" style="background:var(--bad-bg);color:var(--bad)">الكود غير موجود.</div>':
-      d.is_amb?`<div class="banner" style="background:var(--good-bg);color:var(--accent)">🎓 <b>سفير دفعة</b>: ${nm}<br>يحق للمدعو <b>خصم 30%</b> على اشتراكه الأول (7,000 د بدل 10,000)، ويحصل أيضاً على 3 أيام مجانية تلقائياً. السفير يحصل على 10 أيام + 3,000 د بعد التفعيل. اشتراكات سابقة بكوده: ${ar(d.cnt||0)}.</div>`:
-      `<div class="banner">داعٍ عادي: <b>${nm}</b><br>لا خصم للمدعو، ويحصل على 3 أيام مجانية عند التفعيل، والداعي على 7 أيام. اشتراكات سابقة بكوده: ${ar(d.cnt||0)}.</div>`;
-    if(d.found)$('rcr').innerHTML+='<p class="hint">تذكير: اربط الكود بحساب الطالب (حقل «كود الداعي» عند الإنشاء أو التعديل) قبل أول اشتراك، حتى تُضاف الأيام تلقائياً وتُحتسب له.</p>';
-  };
-  $('rcg').onclick=go;$('rcc').onkeydown=e=>{if(e.key==='Enter')go()};
-  $('rcc').focus();
-}
-function editStudentForm(u){
-  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>تعديل بيانات الطالب</h2>
-    <label class="fld"><span>الاسم</span><input class="in" id="en" maxlength="60" value="${esc(u.full_name||'')}"></label>
-    <label class="fld"><span>اسم المستخدم (إنكليزي بدون مسافات)</span><input class="in" id="eu" autocapitalize="none" spellcheck="false" maxlength="30" value="${esc(u.username||'')}" style="direction:ltr;text-align:left"></label>
-    <label class="fld"><span>رقم الهاتف (اختياري، لا يراه غيرك)</span><input class="in" id="eph" type="tel" inputmode="tel" autocomplete="off" maxlength="20" value="${esc(u.phone||'')}" placeholder="07xxxxxxxxx" style="direction:ltr;text-align:left"></label>
-    ${(!u.ref_by&&!(u.subs||[]).length)?`<label class="fld"><span>كود الداعي (اختياري، قبل أول اشتراك فقط)</span><input class="in" id="eref" autocapitalize="characters" spellcheck="false" maxlength="10" style="direction:ltr;text-align:left;text-transform:uppercase"></label>`:''}
-    <p class="hint">تغيير اسم المستخدم يعني أن الطالب يدخل به من الآن، فأبلغه بالاسم الجديد.</p>
-    <p class="err" id="er" role="alert"></p><button class="btn block" id="sv">حفظ</button>`);
-  $('cl').onclick=closeModal;
-  $('sv').onclick=async()=>{
-    const full_name=$('en').value.trim(),username=$('eu').value.trim().toLowerCase(),phone=$('eph').value.trim();
-    if(!/^[a-z0-9._-]{3,30}$/.test(username)){$('er').textContent='اسم المستخدم: 3 إلى 30 حرفاً إنكليزياً أو أرقاماً أو . _ -';return}
-    if(phone&&!/^\+?[0-9\u0660-\u0669\s\-()]{7,20}$/.test(phone)){$('er').textContent='رقم الهاتف غير صحيح. اتركه فارغاً لحذفه.';return}
-    $('sv').disabled=true;
-    const r=await sb.functions.invoke('student-admin',{body:{action:'update',user_id:u.id,full_name,username,phone}});
-    let d=r.data;
-    if(r.error&&r.error.context&&r.error.context.json){try{d=await r.error.context.json()}catch(e){}}
-    if(r.error||(d&&d.error)){
-      $('er').textContent=(d&&d.error==='username_taken')?'اسم المستخدم مستخدم من قبل.':(d&&d.error==='bad_phone')?'رقم الهاتف غير صحيح.':'تعذر حفظ التعديل. جرب مرة ثانية.';
-      $('sv').disabled=false;return;
-    }
-    const rc=$('eref')?$('eref').value.trim().toUpperCase():'';
-    if(rc){
-      const rr=await sb.rpc('admin_set_referrer',{p_user:u.id,p_code:rc});
-      if(rr.error){
-        const m=errMsg(rr.error);
-        $('er').textContent=/bad_ref/.test(rr.error.message||'')?'كود الداعي غير صحيح.':/self_ref/.test(rr.error.message||'')?'لا يمكن أن يدعو الطالب نفسه.':/already_subscribed/.test(rr.error.message||'')?'الطالب لديه اشتراك سابق، لا تنطبق عليه الإحالة.':/already_referred/.test(rr.error.message||'')?'للطالب داعٍ مسجّل مسبقاً.':m;
-        $('sv').disabled=false;loadUsers();return;
-      }
-    }
-    closeModal();toast('تم حفظ التعديل');loadUsers();
-  };
-  $('en').focus();
-}
-function resetPasswordForm(u){
-  const pw=genPass();
-  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>كلمة سر جديدة</h2>
-    <p>الطالب: <b>${esc(u.full_name||u.username)}</b></p>
-    <label class="fld"><span>كلمة السر الجديدة (8 أحرف على الأقل)</span><input class="in" id="np" value="${pw}" style="direction:ltr;text-align:left;font-family:ui-monospace,Menlo,monospace"></label>
-    <p class="err" id="er" role="alert"></p><button class="btn block" id="sv">حفظ</button>`);
-  $('cl').onclick=closeModal;
-  $('sv').onclick=async()=>{
-    const password=$('np').value;
-    if(password.length<8){$('er').textContent='كلمة السر 8 أحرف على الأقل.';return}
-    $('sv').disabled=true;
-    const r=await sb.functions.invoke('student-admin',{body:{action:'set_password',user_id:u.id,password}});
-    if(r.error||(r.data&&r.data.error)){$('er').textContent='تعذر تغيير كلمة السر. جرب مرة ثانية.';$('sv').disabled=false;return}
-    showCredentials('تم تغيير كلمة السر',[['اسم المستخدم',u.username],['كلمة السر الجديدة',password]],'اسم المستخدم: '+u.username+'\nكلمة السر الجديدة: '+password);
-  };
-}
-let QL=[],qtok=0;
-async function qList(more){
-  const el=$('qlist');if(!el)return;
-  const my=++qtok,lim=Math.min(960,A.qn||60);
-  if(more!==true)el.innerHTML='<p class="hint">جارٍ التحميل…</p>';
-  let q=sb.from('questions').select('*').order('t',{ascending:false}).limit(lim);
-  if(A.fs!=='all')q=q.eq('s',A.fs);
-  if(A.fq)q=q.ilike('q','%'+A.fq.replace(/[\\%_]/g,m=>'\\'+m)+'%');
-  const r=await q;
-  if(my!==qtok||!$('qlist'))return;
-  if(r.error){el.innerHTML=`<p class="err">${esc(errMsg(r.error))}</p>`;return}
-  QL=r.data;
-  el.innerHTML=QL.length
-    ?QL.map(q=>{const x=subjOf(q.s),y=q.sy?Store.systems.find(z=>z.id===q.sy):null;return `<div class="item" style="--sc:${safeC(x.c)}"><div class="grow"><div class="qt" dir="${dirOf(q.q)}">${esc(q.q)}</div>
-      <div class="sub">${esc(spById(spOfSubj(x)).n)}، ${esc(x.n)}${y?'، '+esc(y.n):''}${q.y?'، '+ar(q.y):''}${q.free?'، مجاني':''}${q.img?'، 🖼 صورة':''}</div></div>
-      <div class="acts2"><button class="ib" data-eq="${esc(q.id)}">تعديل</button><button class="ib del" data-dq="${esc(q.id)}">حذف</button></div></div>`}).join('')
-      +(QL.length>=lim?(lim<960?`<button class="btn line block" id="qmoreL">عرض 60 سؤالاً إضافياً (المعروض ${ar(QL.length)})</button>`:`<p class="hint">يعرض أحدث ${ar(lim)} سؤالاً. استعمل البحث أو اختر مادة لعرض غيرها.</p>`):'')
-    :`<div class="empty">${cntTotal()?'لا توجد أسئلة مطابقة.':'لا توجد أسئلة بعد.'}</div>`;
-  el.querySelectorAll('[data-eq]').forEach(b=>b.onclick=()=>questionForm(b.dataset.eq));
-  el.querySelectorAll('[data-dq]').forEach(b=>b.onclick=()=>deleteQuestion(b.dataset.dq));
-  const ml=$('qmoreL');if(ml)ml.onclick=()=>{ml.disabled=true;ml.textContent='جارٍ التحميل…';A.qn=lim+60;qList(true)};
-}
-const bookImg=s=>`<span class="bk"><img class="cov pt" src="${esc(s)}" alt="" loading="lazy"></span>`;
-const covImg=u=>/^https:\/\//.test(u||'')?bookImg(u):'';
-function squareJpeg(file,size){return new Promise((res,rej)=>{
-  const url=URL.createObjectURL(file),im=new Image();
-  im.onload=()=>{
-    const m=Math.min(im.width,im.height),sx=(im.width-m)/2,sy=(im.height-m)/2,out=Math.min(size,m);
-    const c=document.createElement('canvas');c.width=out;c.height=out;
-    const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,out,out);x.drawImage(im,sx,sy,m,m,0,0,out,out);
-    URL.revokeObjectURL(url);
-    c.toBlob(b=>b?res(b):rej(new Error('تعذر معالجة الصورة')),'image/jpeg',.82);
-  };
-  im.onerror=()=>{URL.revokeObjectURL(url);rej(new Error('ملف الصورة غير صالح'))};
-  im.src=url;
-})}
-function fitJpeg(file,maxW,maxH){return new Promise((res,rej)=>{
-  const url=URL.createObjectURL(file),im=new Image();
-  im.onload=()=>{
-    const k=Math.min(1,maxW/im.width,maxH/im.height),w=Math.round(im.width*k),h=Math.round(im.height*k);
-    const c=document.createElement('canvas');c.width=w;c.height=h;
-    const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,w,h);x.drawImage(im,0,0,w,h);
-    URL.revokeObjectURL(url);
-    c.toBlob(b=>b?res(b):rej(new Error('تعذر معالجة الصورة')),'image/jpeg',.85);
-  };
-  im.onerror=()=>{URL.revokeObjectURL(url);rej(new Error('ملف الصورة غير صالح'))};
-  im.src=url;
-})}
-const covPath=u=>{const m=/\/covers\/(.+)$/.exec(u||'');return m?decodeURIComponent(m[1]):null};
-function entityForm(col,id,opts){
-  opts=opts||{};
-  const isSub=col==='subjects',isSys=col==='systems';
-  if(isSub&&!Store.specialties.length){toast('أضف اختصاصاً أولاً من تبويب الاختصاصات');return}
-  const e=id?Store[col].find(x=>x.id===id):null;
-  let colr=e?safeC(e.c):COLORS[Store[col].length%COLORS.length];
-  const cols=COLORS.includes(colr)?COLORS:[colr].concat(COLORS);
-  const word=isSys?'النظام':(isSub?'المادة':'الاختصاص');
-  const spSel=isSub?`<label class="fld"><span>الاختصاص</span><select class="in" id="sp">${(e&&!Store.specialties.some(p=>p.id===e.sp))?'<option value="">اختر الاختصاص</option>':''}${Store.specialties.map(p=>`<option value="${esc(p.id)}" ${(e?e.sp===p.id:A.fsp===p.id)?'selected':''}>${esc(p.n)}</option>`).join('')}</select></label>`:'';
-  const done=()=>{closeModal();if(opts.after)opts.after()};
-  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>${e?'تعديل '+word:(isSys?'نظام جديد':(isSub?'مادة جديدة':'اختصاص جديد'))}</h2>
-    <label class="fld"><span>اسم ${word}</span><input class="in" id="sn" maxlength="60" value="${esc(e?e.n:'')}"></label>
-    ${spSel}
-    ${isSys?'':`<div class="fld"><span>صورة الغلاف (اختياري)</span><div class="cvbox"><div id="cvp">${e&&covImg(e.img)?covImg(e.img):'<div class="cvph pt">بدون صورة</div>'}</div><div style="display:flex;flex-direction:column;gap:6px"><button type="button" class="ib" id="cvb">اختيار صورة</button><button type="button" class="ib del" id="cvr">إزالة</button></div></div><input type="file" id="cvf" accept="image/*" hidden></div>`}
-    <div class="fld"><span>اللون</span><div class="cols" id="cols">${cols.map(c=>`<button type="button" class="cl" data-c="${c}" style="background:${c}" aria-label="لون ${c}" aria-pressed="${c===colr}"></button>`).join('')}</div></div>
-    <p class="err" id="er" role="alert"></p><button class="btn block" id="sv">حفظ</button>`);
-  $('cl').onclick=done;
-  $('cols').querySelectorAll('.cl').forEach(b=>b.onclick=()=>{colr=b.dataset.c;$('cols').querySelectorAll('.cl').forEach(x=>x.setAttribute('aria-pressed',x===b))});
-  $('sn').focus();
-  let cvBlob=null,cvRemove=false;
-  if(!isSys){
-    $('cvb').onclick=()=>$('cvf').click();
-    $('cvf').onchange=async ev=>{
-      const f=ev.target.files[0];if(!f)return;
-      try{cvBlob=await fitJpeg(f,600,850);cvRemove=false;$('cvp').innerHTML=bookImg(URL.createObjectURL(cvBlob))}
-      catch(x){toast(errMsg(x))}
-    };
-    $('cvr').onclick=()=>{cvBlob=null;cvRemove=true;$('cvp').innerHTML='<div class="cvph pt">بدون صورة</div>'};
-  }
-  $('sv').onclick=async()=>{
-    const n=$('sn').value.trim();
-    if(!n){$('er').textContent='اكتب اسم '+word+'.';return}
-    const data={n:n,c:colr,ord:e?(e.ord||0):(Store[col].reduce((m,x)=>Math.max(m,x.ord||0),-1)+1)};
-    if(isSub){data.sp=$('sp').value;if(!data.sp){$('er').textContent='اختر الاختصاص.';return}}
-    if(isSys)data.sj=e?e.sj:opts.sj;
-    $('sv').disabled=true;
-    const eid=e?e.id:newId(isSys?'y':(isSub?'s':'p'));
-    try{
-      let oldPath=null;
-      if(!isSys){
-        data.img=e?(e.img||null):null;
-        if(cvBlob){
-          const p=col+'/'+eid+'-'+Date.now()+'.jpg';
-          const u=await sb.storage.from('covers').upload(p,cvBlob,{contentType:'image/jpeg',upsert:true});
-          if(u.error)throw u.error;
-          oldPath=covPath(data.img);
-          data.img=sb.storage.from('covers').getPublicUrl(p).data.publicUrl;
-        }else if(cvRemove){oldPath=covPath(data.img);data.img=null}
-      }
-      await put(col,eid,data);
-      if(oldPath){try{await sb.storage.from('covers').remove([oldPath])}catch(x){}}
-      toast('تم الحفظ');done();
-    }
-    catch(x){$('er').textContent=errMsg(x);$('sv').disabled=false}
-  };
-}
-function systemsSheet(sid){
-  const x=subjOf(sid),list=systemsOf(sid);
-  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>أنظمة ${esc(x.n)}</h2>
-    ${list.length?list.map(y=>`<div class="item" style="--sc:${safeC(y.c)}"><div class="grow"><div class="nm">${esc(y.n)}</div><div class="sub">${ar(cntSy(y.id))} سؤال</div></div>
-      <div class="acts2"><button class="ib" data-ey="${esc(y.id)}">تعديل</button><button class="ib del" data-dy="${esc(y.id)}">حذف</button></div></div>`).join(''):'<div class="empty">لا توجد أنظمة لهذه المادة. أضف نظاماً (مثل القلب والدورة الدموية) ثم اربط الأسئلة به.</div>'}
-    <button class="btn block" id="addY">+ نظام جديد</button>`);
-  const back=()=>systemsSheet(sid);
-  $('cl').onclick=closeModal;
-  $('addY').onclick=()=>entityForm('systems',null,{sj:sid,after:back});
-  modal.querySelectorAll('[data-ey]').forEach(b=>b.onclick=()=>entityForm('systems',b.dataset.ey,{after:back}));
-  modal.querySelectorAll('[data-dy]').forEach(b=>b.onclick=()=>deleteSystem(b.dataset.dy,back));
-}
-async function deleteSystem(id,after){
-  const y=Store.systems.find(z=>z.id===id);if(!y)return;
-  const n=cntSy(id);
-  const ok=await askConfirm('حذف النظام',n?`سيُحذف النظام «${y.n}»، وتبقى أسئلته (${ar(n)}) داخل المادة بدون نظام.`:`سيُحذف النظام «${y.n}».`,'احذف');
-  if(!ok){after();return}
-  try{
-    const r=await sb.from('systems').delete().eq('id',id);
-    if(r.error)throw r.error;
-    await loadAll();refresh();toast('تم الحذف');
-  }catch(x){toast(errMsg(x))}
-  after();
-}
-async function deleteEntity(col,id){
-  const e=Store[col].find(x=>x.id===id);if(!e)return;
-  let subs=[],nq=0;
-  if(col==='specialties'){subs=Store.subjects.filter(x=>x.sp===id);nq=subs.reduce((t,x)=>t+cntS(x.id),0)}
-  else nq=cntS(id);
-  const parts=[];if(subs.length)parts.push(mw(subs.length));if(nq)parts.push(ar(nq)+' سؤال');
-  const msg='سيتم حذف «'+e.n+'»'+(parts.length?' مع '+parts.join(' و')+' فيه':'')+(col==='subjects'?'. تبقى أسئلتها 30 يوماً في تبويب «المحذوفات» ويمكن استرجاعها.':'. الاختصاص لا يمكن استرجاعه بعد الحذف.');
-  const ok=await askConfirm(col==='specialties'?'حذف الاختصاص':'حذف المادة',msg,'احذف');
-  if(!ok)return;
-  try{
-    const r=await sb.from(col).delete().eq('id',id);
-    if(r.error)throw r.error;
-    await loadAll();refresh();toast('تم الحذف');
-  }catch(x){toast(errMsg(x))}
-}
-async function deleteQuestion(id){
-  const ok=await askConfirm('حذف السؤال','سيُحذف هذا السؤال من الموقع، ويبقى 30 يوماً في تبويب «المحذوفات» ويمكنك استرجاعه.','احذف');
-  if(!ok)return;
-  try{await del('questions',id);toast('تم حذف السؤال')}catch(e){toast(errMsg(e))}
-}
-function sysOptions(sid,sel){
-  return '<option value="">بدون نظام</option>'+systemsOf(sid).map(y=>`<option value="${esc(y.id)}" ${y.id===sel?'selected':''}>${esc(y.n)}</option>`).join('');
-}
-function bindMeta(){const s=$('fS'),y=$('fSy');if(s&&y)s.onchange=()=>{y.innerHTML=sysOptions(s.value,'')}}
-function metaFields(q){
-  const sid=q?q.s:(A.fs!=='all'?A.fs:(A.last.s||(Store.subjects[0]||{}).id));
-  const ex=q?q.ex:A.last.ex,y=q?q.y:A.last.y,free=q?q.free:A.last.free;
-  return `<label class="fld"><span>المادة</span><select class="in" id="fS">${subjOptions(sid,false)}</select></label>
-    <label class="fld"><span>النظام (اختياري)</span><select class="in" id="fSy">${sysOptions(sid,q?q.sy:'')}</select></label>
-    <div class="r2"><label class="fld"><span>السنة</span><input class="in" id="fY" type="number" inputmode="numeric" min="1990" max="2100" value="${y||''}" style="direction:ltr;text-align:center"></label></div>
-    <label class="chk"><input type="checkbox" id="fF" ${free?'checked':''}>سؤال مجاني (يظهر لغير المشتركين)</label>`;
-}
-function readMeta(){
-  const y=parseInt($('fY').value,10);
-  return {s:$('fS').value,sy:$('fSy').value||null,ex:'Competitive',y:(y>=1990&&y<=2100)?y:0,free:$('fF').checked};
-}
-/* مؤشر استهلاك القاعدة (غيّر الرقم إذا تغيرت الخطة) */
-const DB_LIMIT_MB=500;
-async function loadUsage(){
-  const el=$('usage');if(!el)return;
-  try{
-    const r=await sb.rpc('admin_db_usage');
-    if(r.error)throw r.error;
-    const d=Array.isArray(r.data)?r.data[0]:r.data;
-    const mb=Number(d.db_bytes)/1048576,qmb=Number(d.questions_bytes)/1048576,pct=Math.min(100,mb/DB_LIMIT_MB*100);
-    const col=pct>=80?'#C0392B':(pct>=60?'#B7791F':'#1A56B0');
-    const fmt=v=>v<10?v.toFixed(1):Math.round(v);
-    if(!$('usage'))return;
-    el.style.setProperty('--sc',col);
-    el.innerHTML=`<div class="nm">استهلاك القاعدة: <bdi>${fmt(mb)} MB</bdi> من <bdi>${DB_LIMIT_MB} MB</bdi> (${ar(pct<1?'أقل من 1':Math.round(pct))}%)</div>
-      <div class="sub">${ar(Number(d.questions_n))} سؤال، حجم جدول الأسئلة <bdi>${fmt(qmb)} MB</bdi>${pct>=60?'. اقتربت من الحد، فكّر بنقل المواد القديمة إلى التخزين.':''}</div>
-      <div class="bar"><i style="width:${Math.max(pct,1).toFixed(1)}%"></i></div>`;
-  }catch(e){if($('usage'))$('usage').innerHTML='<div class="sub">تعذر قراءة الاستهلاك.</div>'}
-}
-function questionForm(id,keep){
-  if(!Store.subjects.length){toast('أضف اختصاصاً ومادة أولاً من لوحة التحكم');return}
-  const q=id?QL.find(x=>x.id===id):null;
-  const o=q?(q.o||[]).slice(0,6):['','','',''];
-  while(o.length<4)o.push('');
-  const qorow=i=>`<div class="orow"><input type="radio" name="ans" value="${i}" id="r${i}" aria-label="الجواب الصحيح ${LET[i]}" ${(q?q.a:0)===i?'checked':''}><span class="l">${LET[i]}</span><input class="in" id="o${i}" dir="auto" value="${esc(o[i])}"></div>`;
-  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>${q?'تعديل السؤال':'سؤال جديد'}</h2>
-    ${metaFields(q)}
-    <label class="fld"><span>نص السؤال</span><textarea class="in" id="fQ" dir="auto">${esc(q?q.q:'')}</textarea></label>
-    <div class="fld"><span>صورة السؤال (اختياري)</span><div id="imgBox"></div>
+    <div class="r2"><button class="btn" id="pds">\u062D\u0641\u0638</button><button class="btn line" id="pda">\u062F\u0641\u0639\u062A \u0627\u0644\u0643\u0644</button></div>`),$("cl").onclick=closeModal;const s=async a=>{const n=await sb.rpc("admin_set_ref_paid",{p_user:t.id,p_paid:a});if(n.error){$("er").textContent=/bad_paid/.test(n.error.message||"")?"\u0627\u0644\u0631\u0642\u0645 \u064A\u062C\u0628 \u0623\u0646 \u064A\u0643\u0648\u0646 \u0628\u064A\u0646 0 \u0648\u0639\u062F\u062F \u0627\u0644\u0627\u0634\u062A\u0631\u0627\u0643\u0627\u062A \u0627\u0644\u0645\u0633\u062A\u062D\u0642\u0629.":errMsg(n.error);return}closeModal(),toast("\u062A\u0645 \u062A\u0633\u062C\u064A\u0644 \u0627\u0644\u062F\u0641\u0639"),loadUsers()};$("pds").onclick=()=>s(parseInt($("pdn").value,10)||0),$("pda").onclick=()=>s(e)}function checkRefForm(){showModal(`<button class="x" id="cl" aria-label="\u0625\u063A\u0644\u0627\u0642">\u2715</button><h2>\u0627\u0644\u062A\u062D\u0642\u0642 \u0645\u0646 \u0643\u0648\u062F \u0625\u062D\u0627\u0644\u0629</h2>
+    <p class="hint">\u0627\u0643\u062A\u0628 \u0627\u0644\u0643\u0648\u062F \u0627\u0644\u0630\u064A \u0623\u0639\u0637\u0627\u0643 \u0625\u064A\u0627\u0647 \u0627\u0644\u0637\u0627\u0644\u0628 \u0644\u062A\u0639\u0631\u0641 \u0647\u0644 \u0635\u0627\u062D\u0628\u0647 \u0633\u0641\u064A\u0631 (\u062E\u0635\u0645 30%) \u0623\u0645 \u062F\u0627\u0639\u064D \u0639\u0627\u062F\u064A (\u0628\u062F\u0648\u0646 \u062E\u0635\u0645).</p>
+    <label class="fld"><span>\u0643\u0648\u062F \u0627\u0644\u0625\u062D\u0627\u0644\u0629</span><input class="in" id="rcc" autocapitalize="characters" spellcheck="false" maxlength="10" style="direction:ltr;text-align:center;text-transform:uppercase"></label>
+    <button class="btn block" id="rcg">\u062A\u062D\u0642\u0642</button><div id="rcr" style="margin-top:12px"></div>`),$("cl").onclick=closeModal;const t=async()=>{const e=$("rcc").value.trim().toUpperCase();if(e.length<4)return;$("rcr").innerHTML='<p class="hint">\u062C\u0627\u0631\u064D \u0627\u0644\u062A\u062D\u0642\u0642\u2026</p>';const s=await sb.rpc("admin_check_ref",{p_code:e}),a=s.data&&(Array.isArray(s.data)?s.data[0]:s.data);if(s.error||!a){$("rcr").innerHTML='<p class="err">\u062A\u0639\u0630\u0631 \u0627\u0644\u062A\u062D\u0642\u0642. \u062C\u0631\u0628 \u0645\u0631\u0629 \u062B\u0627\u0646\u064A\u0629.</p>';return}const n=esc(a.name||a.username||"");$("rcr").innerHTML=a.found?a.is_amb?`<div class="banner" style="background:var(--good-bg);color:var(--accent)">\u{1F393} <b>\u0633\u0641\u064A\u0631 \u062F\u0641\u0639\u0629</b>: ${n}<br>\u064A\u062D\u0642 \u0644\u0644\u0645\u062F\u0639\u0648 <b>\u062E\u0635\u0645 30%</b> \u0639\u0644\u0649 \u0627\u0634\u062A\u0631\u0627\u0643\u0647 \u0627\u0644\u0623\u0648\u0644 (7,000 \u062F \u0628\u062F\u0644 10,000)\u060C \u0648\u064A\u062D\u0635\u0644 \u0623\u064A\u0636\u0627\u064B \u0639\u0644\u0649 3 \u0623\u064A\u0627\u0645 \u0645\u062C\u0627\u0646\u064A\u0629 \u062A\u0644\u0642\u0627\u0626\u064A\u0627\u064B. \u0627\u0644\u0633\u0641\u064A\u0631 \u064A\u062D\u0635\u0644 \u0639\u0644\u0649 10 \u0623\u064A\u0627\u0645 + 3,000 \u062F \u0628\u0639\u062F \u0627\u0644\u062A\u0641\u0639\u064A\u0644. \u0627\u0634\u062A\u0631\u0627\u0643\u0627\u062A \u0633\u0627\u0628\u0642\u0629 \u0628\u0643\u0648\u062F\u0647: ${ar(a.cnt||0)}.</div>`:`<div class="banner">\u062F\u0627\u0639\u064D \u0639\u0627\u062F\u064A: <b>${n}</b><br>\u0644\u0627 \u062E\u0635\u0645 \u0644\u0644\u0645\u062F\u0639\u0648\u060C \u0648\u064A\u062D\u0635\u0644 \u0639\u0644\u0649 3 \u0623\u064A\u0627\u0645 \u0645\u062C\u0627\u0646\u064A\u0629 \u0639\u0646\u062F \u0627\u0644\u062A\u0641\u0639\u064A\u0644\u060C \u0648\u0627\u0644\u062F\u0627\u0639\u064A \u0639\u0644\u0649 7 \u0623\u064A\u0627\u0645. \u0627\u0634\u062A\u0631\u0627\u0643\u0627\u062A \u0633\u0627\u0628\u0642\u0629 \u0628\u0643\u0648\u062F\u0647: ${ar(a.cnt||0)}.</div>`:'<div class="banner" style="background:var(--bad-bg);color:var(--bad)">\u0627\u0644\u0643\u0648\u062F \u063A\u064A\u0631 \u0645\u0648\u062C\u0648\u062F.</div>',a.found&&($("rcr").innerHTML+='<p class="hint">\u062A\u0630\u0643\u064A\u0631: \u0627\u0631\u0628\u0637 \u0627\u0644\u0643\u0648\u062F \u0628\u062D\u0633\u0627\u0628 \u0627\u0644\u0637\u0627\u0644\u0628 (\u062D\u0642\u0644 \xAB\u0643\u0648\u062F \u0627\u0644\u062F\u0627\u0639\u064A\xBB \u0639\u0646\u062F \u0627\u0644\u0625\u0646\u0634\u0627\u0621 \u0623\u0648 \u0627\u0644\u062A\u0639\u062F\u064A\u0644) \u0642\u0628\u0644 \u0623\u0648\u0644 \u0627\u0634\u062A\u0631\u0627\u0643\u060C \u062D\u062A\u0649 \u062A\u064F\u0636\u0627\u0641 \u0627\u0644\u0623\u064A\u0627\u0645 \u062A\u0644\u0642\u0627\u0626\u064A\u0627\u064B \u0648\u062A\u064F\u062D\u062A\u0633\u0628 \u0644\u0647.</p>')};$("rcg").onclick=t,$("rcc").onkeydown=e=>{e.key==="Enter"&&t()},$("rcc").focus()}function editStudentForm(t){showModal(`<button class="x" id="cl" aria-label="\u0625\u063A\u0644\u0627\u0642">\u2715</button><h2>\u062A\u0639\u062F\u064A\u0644 \u0628\u064A\u0627\u0646\u0627\u062A \u0627\u0644\u0637\u0627\u0644\u0628</h2>
+    <label class="fld"><span>\u0627\u0644\u0627\u0633\u0645</span><input class="in" id="en" maxlength="60" value="${esc(t.full_name||"")}"></label>
+    <label class="fld"><span>\u0627\u0633\u0645 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645 (\u0625\u0646\u0643\u0644\u064A\u0632\u064A \u0628\u062F\u0648\u0646 \u0645\u0633\u0627\u0641\u0627\u062A)</span><input class="in" id="eu" autocapitalize="none" spellcheck="false" maxlength="30" value="${esc(t.username||"")}" style="direction:ltr;text-align:left"></label>
+    <label class="fld"><span>\u0631\u0642\u0645 \u0627\u0644\u0647\u0627\u062A\u0641 (\u0627\u062E\u062A\u064A\u0627\u0631\u064A\u060C \u0644\u0627 \u064A\u0631\u0627\u0647 \u063A\u064A\u0631\u0643)</span><input class="in" id="eph" type="tel" inputmode="tel" autocomplete="off" maxlength="20" value="${esc(t.phone||"")}" placeholder="07xxxxxxxxx" style="direction:ltr;text-align:left"></label>
+    ${!t.ref_by&&!(t.subs||[]).length?'<label class="fld"><span>\u0643\u0648\u062F \u0627\u0644\u062F\u0627\u0639\u064A (\u0627\u062E\u062A\u064A\u0627\u0631\u064A\u060C \u0642\u0628\u0644 \u0623\u0648\u0644 \u0627\u0634\u062A\u0631\u0627\u0643 \u0641\u0642\u0637)</span><input class="in" id="eref" autocapitalize="characters" spellcheck="false" maxlength="10" style="direction:ltr;text-align:left;text-transform:uppercase"></label>':""}
+    <p class="hint">\u062A\u063A\u064A\u064A\u0631 \u0627\u0633\u0645 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645 \u064A\u0639\u0646\u064A \u0623\u0646 \u0627\u0644\u0637\u0627\u0644\u0628 \u064A\u062F\u062E\u0644 \u0628\u0647 \u0645\u0646 \u0627\u0644\u0622\u0646\u060C \u0641\u0623\u0628\u0644\u063A\u0647 \u0628\u0627\u0644\u0627\u0633\u0645 \u0627\u0644\u062C\u062F\u064A\u062F.</p>
+    <p class="err" id="er" role="alert"></p><button class="btn block" id="sv">\u062D\u0641\u0638</button>`),$("cl").onclick=closeModal,$("sv").onclick=async()=>{const e=$("en").value.trim(),s=$("eu").value.trim().toLowerCase(),a=$("eph").value.trim();if(!/^[a-z0-9._-]{3,30}$/.test(s)){$("er").textContent="\u0627\u0633\u0645 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645: 3 \u0625\u0644\u0649 30 \u062D\u0631\u0641\u0627\u064B \u0625\u0646\u0643\u0644\u064A\u0632\u064A\u0627\u064B \u0623\u0648 \u0623\u0631\u0642\u0627\u0645\u0627\u064B \u0623\u0648 . _ -";return}if(a&&!/^\+?[0-9\u0660-\u0669\s\-()]{7,20}$/.test(a)){$("er").textContent="\u0631\u0642\u0645 \u0627\u0644\u0647\u0627\u062A\u0641 \u063A\u064A\u0631 \u0635\u062D\u064A\u062D. \u0627\u062A\u0631\u0643\u0647 \u0641\u0627\u0631\u063A\u0627\u064B \u0644\u062D\u0630\u0641\u0647.";return}$("sv").disabled=!0;const n=await sb.functions.invoke("student-admin",{body:{action:"update",user_id:t.id,full_name:e,username:s,phone:a}});let i=n.data;if(n.error&&n.error.context&&n.error.context.json)try{i=await n.error.context.json()}catch{}if(n.error||i&&i.error){$("er").textContent=i&&i.error==="username_taken"?"\u0627\u0633\u0645 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645 \u0645\u0633\u062A\u062E\u062F\u0645 \u0645\u0646 \u0642\u0628\u0644.":i&&i.error==="bad_phone"?"\u0631\u0642\u0645 \u0627\u0644\u0647\u0627\u062A\u0641 \u063A\u064A\u0631 \u0635\u062D\u064A\u062D.":"\u062A\u0639\u0630\u0631 \u062D\u0641\u0638 \u0627\u0644\u062A\u0639\u062F\u064A\u0644. \u062C\u0631\u0628 \u0645\u0631\u0629 \u062B\u0627\u0646\u064A\u0629.",$("sv").disabled=!1;return}const l=$("eref")?$("eref").value.trim().toUpperCase():"";if(l){const o=await sb.rpc("admin_set_referrer",{p_user:t.id,p_code:l});if(o.error){const c=errMsg(o.error);$("er").textContent=/bad_ref/.test(o.error.message||"")?"\u0643\u0648\u062F \u0627\u0644\u062F\u0627\u0639\u064A \u063A\u064A\u0631 \u0635\u062D\u064A\u062D.":/self_ref/.test(o.error.message||"")?"\u0644\u0627 \u064A\u0645\u0643\u0646 \u0623\u0646 \u064A\u062F\u0639\u0648 \u0627\u0644\u0637\u0627\u0644\u0628 \u0646\u0641\u0633\u0647.":/already_subscribed/.test(o.error.message||"")?"\u0627\u0644\u0637\u0627\u0644\u0628 \u0644\u062F\u064A\u0647 \u0627\u0634\u062A\u0631\u0627\u0643 \u0633\u0627\u0628\u0642\u060C \u0644\u0627 \u062A\u0646\u0637\u0628\u0642 \u0639\u0644\u064A\u0647 \u0627\u0644\u0625\u062D\u0627\u0644\u0629.":/already_referred/.test(o.error.message||"")?"\u0644\u0644\u0637\u0627\u0644\u0628 \u062F\u0627\u0639\u064D \u0645\u0633\u062C\u0651\u0644 \u0645\u0633\u0628\u0642\u0627\u064B.":c,$("sv").disabled=!1,loadUsers();return}}closeModal(),toast("\u062A\u0645 \u062D\u0641\u0638 \u0627\u0644\u062A\u0639\u062F\u064A\u0644"),loadUsers()},$("en").focus()}function resetPasswordForm(t){const e=genPass();showModal(`<button class="x" id="cl" aria-label="\u0625\u063A\u0644\u0627\u0642">\u2715</button><h2>\u0643\u0644\u0645\u0629 \u0633\u0631 \u062C\u062F\u064A\u062F\u0629</h2>
+    <p>\u0627\u0644\u0637\u0627\u0644\u0628: <b>${esc(t.full_name||t.username)}</b></p>
+    <label class="fld"><span>\u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631 \u0627\u0644\u062C\u062F\u064A\u062F\u0629 (8 \u0623\u062D\u0631\u0641 \u0639\u0644\u0649 \u0627\u0644\u0623\u0642\u0644)</span><input class="in" id="np" value="${e}" style="direction:ltr;text-align:left;font-family:ui-monospace,Menlo,monospace"></label>
+    <p class="err" id="er" role="alert"></p><button class="btn block" id="sv">\u062D\u0641\u0638</button>`),$("cl").onclick=closeModal,$("sv").onclick=async()=>{const s=$("np").value;if(s.length<8){$("er").textContent="\u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631 8 \u0623\u062D\u0631\u0641 \u0639\u0644\u0649 \u0627\u0644\u0623\u0642\u0644.";return}$("sv").disabled=!0;const a=await sb.functions.invoke("student-admin",{body:{action:"set_password",user_id:t.id,password:s}});if(a.error||a.data&&a.data.error){$("er").textContent="\u062A\u0639\u0630\u0631 \u062A\u063A\u064A\u064A\u0631 \u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631. \u062C\u0631\u0628 \u0645\u0631\u0629 \u062B\u0627\u0646\u064A\u0629.",$("sv").disabled=!1;return}showCredentials("\u062A\u0645 \u062A\u063A\u064A\u064A\u0631 \u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631",[["\u0627\u0633\u0645 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645",t.username],["\u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631 \u0627\u0644\u062C\u062F\u064A\u062F\u0629",s]],"\u0627\u0633\u0645 \u0627\u0644\u0645\u0633\u062A\u062E\u062F\u0645: "+t.username+`
+\u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631 \u0627\u0644\u062C\u062F\u064A\u062F\u0629: `+s)}}let QL=[],qtok=0;async function qList(t){const e=$("qlist");if(!e)return;const s=++qtok,a=Math.min(960,A.qn||60);t!==!0&&(e.innerHTML='<p class="hint">\u062C\u0627\u0631\u064D \u0627\u0644\u062A\u062D\u0645\u064A\u0644\u2026</p>');let n=sb.from("questions").select("*").order("t",{ascending:!1}).limit(a);A.fs!=="all"&&(n=n.eq("s",A.fs)),A.fq&&(n=n.ilike("q","%"+A.fq.replace(/[\\%_]/g,o=>"\\"+o)+"%"));const i=await n;if(s!==qtok||!$("qlist"))return;if(i.error){e.innerHTML=`<p class="err">${esc(errMsg(i.error))}</p>`;return}QL=i.data,e.innerHTML=QL.length?QL.map(o=>{const c=subjOf(o.s),p=o.sy?Store.systems.find(d=>d.id===o.sy):null;return`<div class="item" style="--sc:${safeC(c.c)}"><div class="grow"><div class="qt" dir="${dirOf(o.q)}">${esc(o.q)}</div>
+      <div class="sub">${esc(spById(spOfSubj(c)).n)}\u060C ${esc(c.n)}${p?"\u060C "+esc(p.n):""}${o.y?"\u060C "+ar(o.y):""}${o.free?"\u060C \u0645\u062C\u0627\u0646\u064A":""}${o.img?"\u060C \u{1F5BC} \u0635\u0648\u0631\u0629":""}</div></div>
+      <div class="acts2"><button class="ib" data-eq="${esc(o.id)}">\u062A\u0639\u062F\u064A\u0644</button><button class="ib del" data-dq="${esc(o.id)}">\u062D\u0630\u0641</button></div></div>`}).join("")+(QL.length>=a?a<960?`<button class="btn line block" id="qmoreL">\u0639\u0631\u0636 60 \u0633\u0624\u0627\u0644\u0627\u064B \u0625\u0636\u0627\u0641\u064A\u0627\u064B (\u0627\u0644\u0645\u0639\u0631\u0648\u0636 ${ar(QL.length)})</button>`:`<p class="hint">\u064A\u0639\u0631\u0636 \u0623\u062D\u062F\u062B ${ar(a)} \u0633\u0624\u0627\u0644\u0627\u064B. \u0627\u0633\u062A\u0639\u0645\u0644 \u0627\u0644\u0628\u062D\u062B \u0623\u0648 \u0627\u062E\u062A\u0631 \u0645\u0627\u062F\u0629 \u0644\u0639\u0631\u0636 \u063A\u064A\u0631\u0647\u0627.</p>`:""):`<div class="empty">${cntTotal()?"\u0644\u0627 \u062A\u0648\u062C\u062F \u0623\u0633\u0626\u0644\u0629 \u0645\u0637\u0627\u0628\u0642\u0629.":"\u0644\u0627 \u062A\u0648\u062C\u062F \u0623\u0633\u0626\u0644\u0629 \u0628\u0639\u062F."}</div>`,e.querySelectorAll("[data-eq]").forEach(o=>o.onclick=()=>questionForm(o.dataset.eq)),e.querySelectorAll("[data-dq]").forEach(o=>o.onclick=()=>deleteQuestion(o.dataset.dq));const l=$("qmoreL");l&&(l.onclick=()=>{l.disabled=!0,l.textContent="\u062C\u0627\u0631\u064D \u0627\u0644\u062A\u062D\u0645\u064A\u0644\u2026",A.qn=a+60,qList(!0)})}const bookImg=t=>`<span class="bk"><img class="cov pt" src="${esc(t)}" alt="" loading="lazy"></span>`,covImg=t=>/^https:\/\//.test(t||"")?bookImg(t):"";function squareJpeg(t,e){return new Promise((s,a)=>{const n=URL.createObjectURL(t),i=new Image;i.onload=()=>{const l=Math.min(i.width,i.height),o=(i.width-l)/2,c=(i.height-l)/2,p=Math.min(e,l),d=document.createElement("canvas");d.width=p,d.height=p;const b=d.getContext("2d");b.fillStyle="#fff",b.fillRect(0,0,p,p),b.drawImage(i,o,c,l,l,0,0,p,p),URL.revokeObjectURL(n),d.toBlob(r=>r?s(r):a(new Error("\u062A\u0639\u0630\u0631 \u0645\u0639\u0627\u0644\u062C\u0629 \u0627\u0644\u0635\u0648\u0631\u0629")),"image/jpeg",.82)},i.onerror=()=>{URL.revokeObjectURL(n),a(new Error("\u0645\u0644\u0641 \u0627\u0644\u0635\u0648\u0631\u0629 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D"))},i.src=n})}function fitJpeg(t,e,s){return new Promise((a,n)=>{const i=URL.createObjectURL(t),l=new Image;l.onload=()=>{const o=Math.min(1,e/l.width,s/l.height),c=Math.round(l.width*o),p=Math.round(l.height*o),d=document.createElement("canvas");d.width=c,d.height=p;const b=d.getContext("2d");b.fillStyle="#fff",b.fillRect(0,0,c,p),b.drawImage(l,0,0,c,p),URL.revokeObjectURL(i),d.toBlob(r=>r?a(r):n(new Error("\u062A\u0639\u0630\u0631 \u0645\u0639\u0627\u0644\u062C\u0629 \u0627\u0644\u0635\u0648\u0631\u0629")),"image/jpeg",.85)},l.onerror=()=>{URL.revokeObjectURL(i),n(new Error("\u0645\u0644\u0641 \u0627\u0644\u0635\u0648\u0631\u0629 \u063A\u064A\u0631 \u0635\u0627\u0644\u062D"))},l.src=i})}const covPath=t=>{const e=/\/covers\/(.+)$/.exec(t||"");return e?decodeURIComponent(e[1]):null};function entityForm(t,e,s){s=s||{};const a=t==="subjects",n=t==="systems";if(a&&!Store.specialties.length){toast("\u0623\u0636\u0641 \u0627\u062E\u062A\u0635\u0627\u0635\u0627\u064B \u0623\u0648\u0644\u0627\u064B \u0645\u0646 \u062A\u0628\u0648\u064A\u0628 \u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635\u0627\u062A");return}const i=e?Store[t].find(u=>u.id===e):null;let l=i?safeC(i.c):COLORS[Store[t].length%COLORS.length];const o=COLORS.includes(l)?COLORS:[l].concat(COLORS),c=n?"\u0627\u0644\u0646\u0638\u0627\u0645":a?"\u0627\u0644\u0645\u0627\u062F\u0629":"\u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635",p=a?`<label class="fld"><span>\u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635</span><select class="in" id="sp">${i&&!Store.specialties.some(u=>u.id===i.sp)?'<option value="">\u0627\u062E\u062A\u0631 \u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635</option>':""}${Store.specialties.map(u=>`<option value="${esc(u.id)}" ${(i?i.sp===u.id:A.fsp===u.id)?"selected":""}>${esc(u.n)}</option>`).join("")}</select></label>`:"",d=()=>{closeModal(),s.after&&s.after()};showModal(`<button class="x" id="cl" aria-label="\u0625\u063A\u0644\u0627\u0642">\u2715</button><h2>${i?"\u062A\u0639\u062F\u064A\u0644 "+c:n?"\u0646\u0638\u0627\u0645 \u062C\u062F\u064A\u062F":a?"\u0645\u0627\u062F\u0629 \u062C\u062F\u064A\u062F\u0629":"\u0627\u062E\u062A\u0635\u0627\u0635 \u062C\u062F\u064A\u062F"}</h2>
+    <label class="fld"><span>\u0627\u0633\u0645 ${c}</span><input class="in" id="sn" maxlength="60" value="${esc(i?i.n:"")}"></label>
+    ${p}
+    ${n?"":`<div class="fld"><span>\u0635\u0648\u0631\u0629 \u0627\u0644\u063A\u0644\u0627\u0641 (\u0627\u062E\u062A\u064A\u0627\u0631\u064A)</span><div class="cvbox"><div id="cvp">${i&&covImg(i.img)?covImg(i.img):'<div class="cvph pt">\u0628\u062F\u0648\u0646 \u0635\u0648\u0631\u0629</div>'}</div><div style="display:flex;flex-direction:column;gap:6px"><button type="button" class="ib" id="cvb">\u0627\u062E\u062A\u064A\u0627\u0631 \u0635\u0648\u0631\u0629</button><button type="button" class="ib del" id="cvr">\u0625\u0632\u0627\u0644\u0629</button></div></div><input type="file" id="cvf" accept="image/*" hidden></div>`}
+    <div class="fld"><span>\u0627\u0644\u0644\u0648\u0646</span><div class="cols" id="cols">${o.map(u=>`<button type="button" class="cl" data-c="${u}" style="background:${u}" aria-label="\u0644\u0648\u0646 ${u}" aria-pressed="${u===l}"></button>`).join("")}</div></div>
+    <p class="err" id="er" role="alert"></p><button class="btn block" id="sv">\u062D\u0641\u0638</button>`),$("cl").onclick=d,$("cols").querySelectorAll(".cl").forEach(u=>u.onclick=()=>{l=u.dataset.c,$("cols").querySelectorAll(".cl").forEach(f=>f.setAttribute("aria-pressed",f===u))}),$("sn").focus();let b=null,r=!1;n||($("cvb").onclick=()=>$("cvf").click(),$("cvf").onchange=async u=>{const f=u.target.files[0];if(f)try{b=await fitJpeg(f,600,850),r=!1,$("cvp").innerHTML=bookImg(URL.createObjectURL(b))}catch(m){toast(errMsg(m))}},$("cvr").onclick=()=>{b=null,r=!0,$("cvp").innerHTML='<div class="cvph pt">\u0628\u062F\u0648\u0646 \u0635\u0648\u0631\u0629</div>'}),$("sv").onclick=async()=>{const u=$("sn").value.trim();if(!u){$("er").textContent="\u0627\u0643\u062A\u0628 \u0627\u0633\u0645 "+c+".";return}const f={n:u,c:l,ord:i?i.ord||0:Store[t].reduce((h,y)=>Math.max(h,y.ord||0),-1)+1};if(a&&(f.sp=$("sp").value,!f.sp)){$("er").textContent="\u0627\u062E\u062A\u0631 \u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635.";return}n&&(f.sj=i?i.sj:s.sj),$("sv").disabled=!0;const m=i?i.id:newId(n?"y":a?"s":"p");try{let h=null;if(!n)if(f.img=i&&i.img||null,b){const y=t+"/"+m+"-"+Date.now()+".jpg",_=await sb.storage.from("covers").upload(y,b,{contentType:"image/jpeg",upsert:!0});if(_.error)throw _.error;h=covPath(f.img),f.img=sb.storage.from("covers").getPublicUrl(y).data.publicUrl}else r&&(h=covPath(f.img),f.img=null);if(await put(t,m,f),h)try{await sb.storage.from("covers").remove([h])}catch{}toast("\u062A\u0645 \u0627\u0644\u062D\u0641\u0638"),d()}catch(h){$("er").textContent=errMsg(h),$("sv").disabled=!1}}}function systemsSheet(t){const e=subjOf(t),s=systemsOf(t);showModal(`<button class="x" id="cl" aria-label="\u0625\u063A\u0644\u0627\u0642">\u2715</button><h2>\u0623\u0646\u0638\u0645\u0629 ${esc(e.n)}</h2>
+    ${s.length?s.map(n=>`<div class="item" style="--sc:${safeC(n.c)}"><div class="grow"><div class="nm">${esc(n.n)}</div><div class="sub">${ar(cntSy(n.id))} \u0633\u0624\u0627\u0644</div></div>
+      <div class="acts2"><button class="ib" data-ey="${esc(n.id)}">\u062A\u0639\u062F\u064A\u0644</button><button class="ib del" data-dy="${esc(n.id)}">\u062D\u0630\u0641</button></div></div>`).join(""):'<div class="empty">\u0644\u0627 \u062A\u0648\u062C\u062F \u0623\u0646\u0638\u0645\u0629 \u0644\u0647\u0630\u0647 \u0627\u0644\u0645\u0627\u062F\u0629. \u0623\u0636\u0641 \u0646\u0638\u0627\u0645\u0627\u064B (\u0645\u062B\u0644 \u0627\u0644\u0642\u0644\u0628 \u0648\u0627\u0644\u062F\u0648\u0631\u0629 \u0627\u0644\u062F\u0645\u0648\u064A\u0629) \u062B\u0645 \u0627\u0631\u0628\u0637 \u0627\u0644\u0623\u0633\u0626\u0644\u0629 \u0628\u0647.</div>'}
+    <button class="btn block" id="addY">+ \u0646\u0638\u0627\u0645 \u062C\u062F\u064A\u062F</button>`);const a=()=>systemsSheet(t);$("cl").onclick=closeModal,$("addY").onclick=()=>entityForm("systems",null,{sj:t,after:a}),modal.querySelectorAll("[data-ey]").forEach(n=>n.onclick=()=>entityForm("systems",n.dataset.ey,{after:a})),modal.querySelectorAll("[data-dy]").forEach(n=>n.onclick=()=>deleteSystem(n.dataset.dy,a))}async function deleteSystem(t,e){const s=Store.systems.find(i=>i.id===t);if(!s)return;const a=cntSy(t);if(!await askConfirm("\u062D\u0630\u0641 \u0627\u0644\u0646\u0638\u0627\u0645",a?`\u0633\u064A\u064F\u062D\u0630\u0641 \u0627\u0644\u0646\u0638\u0627\u0645 \xAB${s.n}\xBB\u060C \u0648\u062A\u0628\u0642\u0649 \u0623\u0633\u0626\u0644\u062A\u0647 (${ar(a)}) \u062F\u0627\u062E\u0644 \u0627\u0644\u0645\u0627\u062F\u0629 \u0628\u062F\u0648\u0646 \u0646\u0638\u0627\u0645.`:`\u0633\u064A\u064F\u062D\u0630\u0641 \u0627\u0644\u0646\u0638\u0627\u0645 \xAB${s.n}\xBB.`,"\u0627\u062D\u0630\u0641")){e();return}try{const i=await sb.from("systems").delete().eq("id",t);if(i.error)throw i.error;await loadAll(),refresh(),toast("\u062A\u0645 \u0627\u0644\u062D\u0630\u0641")}catch(i){toast(errMsg(i))}e()}async function deleteEntity(t,e){const s=Store[t].find(c=>c.id===e);if(!s)return;let a=[],n=0;t==="specialties"?(a=Store.subjects.filter(c=>c.sp===e),n=a.reduce((c,p)=>c+cntS(p.id),0)):n=cntS(e);const i=[];a.length&&i.push(mw(a.length)),n&&i.push(ar(n)+" \u0633\u0624\u0627\u0644");const l="\u0633\u064A\u062A\u0645 \u062D\u0630\u0641 \xAB"+s.n+"\xBB"+(i.length?" \u0645\u0639 "+i.join(" \u0648")+" \u0641\u064A\u0647":"")+(t==="subjects"?". \u062A\u0628\u0642\u0649 \u0623\u0633\u0626\u0644\u062A\u0647\u0627 30 \u064A\u0648\u0645\u0627\u064B \u0641\u064A \u062A\u0628\u0648\u064A\u0628 \xAB\u0627\u0644\u0645\u062D\u0630\u0648\u0641\u0627\u062A\xBB \u0648\u064A\u0645\u0643\u0646 \u0627\u0633\u062A\u0631\u062C\u0627\u0639\u0647\u0627.":". \u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635 \u0644\u0627 \u064A\u0645\u0643\u0646 \u0627\u0633\u062A\u0631\u062C\u0627\u0639\u0647 \u0628\u0639\u062F \u0627\u0644\u062D\u0630\u0641.");if(await askConfirm(t==="specialties"?"\u062D\u0630\u0641 \u0627\u0644\u0627\u062E\u062A\u0635\u0627\u0635":"\u062D\u0630\u0641 \u0627\u0644\u0645\u0627\u062F\u0629",l,"\u0627\u062D\u0630\u0641"))try{const c=await sb.from(t).delete().eq("id",e);if(c.error)throw c.error;await loadAll(),refresh(),toast("\u062A\u0645 \u0627\u0644\u062D\u0630\u0641")}catch(c){toast(errMsg(c))}}async function deleteQuestion(t){if(await askConfirm("\u062D\u0630\u0641 \u0627\u0644\u0633\u0624\u0627\u0644","\u0633\u064A\u064F\u062D\u0630\u0641 \u0647\u0630\u0627 \u0627\u0644\u0633\u0624\u0627\u0644 \u0645\u0646 \u0627\u0644\u0645\u0648\u0642\u0639\u060C \u0648\u064A\u0628\u0642\u0649 30 \u064A\u0648\u0645\u0627\u064B \u0641\u064A \u062A\u0628\u0648\u064A\u0628 \xAB\u0627\u0644\u0645\u062D\u0630\u0648\u0641\u0627\u062A\xBB \u0648\u064A\u0645\u0643\u0646\u0643 \u0627\u0633\u062A\u0631\u062C\u0627\u0639\u0647.","\u0627\u062D\u0630\u0641"))try{await del("questions",t),toast("\u062A\u0645 \u062D\u0630\u0641 \u0627\u0644\u0633\u0624\u0627\u0644")}catch(s){toast(errMsg(s))}}function sysOptions(t,e){return'<option value="">\u0628\u062F\u0648\u0646 \u0646\u0638\u0627\u0645</option>'+systemsOf(t).map(s=>`<option value="${esc(s.id)}" ${s.id===e?"selected":""}>${esc(s.n)}</option>`).join("")}function bindMeta(){const t=$("fS"),e=$("fSy");t&&e&&(t.onchange=()=>{e.innerHTML=sysOptions(t.value,"")})}function metaFields(t){const e=t?t.s:A.fs!=="all"?A.fs:A.last.s||(Store.subjects[0]||{}).id,s=t?t.ex:A.last.ex,a=t?t.y:A.last.y,n=t?t.free:A.last.free;return`<label class="fld"><span>\u0627\u0644\u0645\u0627\u062F\u0629</span><select class="in" id="fS">${subjOptions(e,!1)}</select></label>
+    <label class="fld"><span>\u0627\u0644\u0646\u0638\u0627\u0645 (\u0627\u062E\u062A\u064A\u0627\u0631\u064A)</span><select class="in" id="fSy">${sysOptions(e,t?t.sy:"")}</select></label>
+    <div class="r2"><label class="fld"><span>\u0627\u0644\u0633\u0646\u0629</span><input class="in" id="fY" type="number" inputmode="numeric" min="1990" max="2100" value="${a||""}" style="direction:ltr;text-align:center"></label></div>
+    <label class="chk"><input type="checkbox" id="fF" ${n?"checked":""}>\u0633\u0624\u0627\u0644 \u0645\u062C\u0627\u0646\u064A (\u064A\u0638\u0647\u0631 \u0644\u063A\u064A\u0631 \u0627\u0644\u0645\u0634\u062A\u0631\u0643\u064A\u0646)</label>`}function readMeta(){const t=parseInt($("fY").value,10);return{s:$("fS").value,sy:$("fSy").value||null,ex:"Competitive",y:t>=1990&&t<=2100?t:0,free:$("fF").checked}}const DB_LIMIT_MB=500;async function loadUsage(){const t=$("usage");if(t)try{const e=await sb.rpc("admin_db_usage");if(e.error)throw e.error;const s=Array.isArray(e.data)?e.data[0]:e.data,a=Number(s.db_bytes)/1048576,n=Number(s.questions_bytes)/1048576,i=Math.min(100,a/DB_LIMIT_MB*100),l=i>=80?"#C0392B":i>=60?"#B7791F":"#1A56B0",o=c=>c<10?c.toFixed(1):Math.round(c);if(!$("usage"))return;t.style.setProperty("--sc",l),t.innerHTML=`<div class="nm">\u0627\u0633\u062A\u0647\u0644\u0627\u0643 \u0627\u0644\u0642\u0627\u0639\u062F\u0629: <bdi>${o(a)} MB</bdi> \u0645\u0646 <bdi>${DB_LIMIT_MB} MB</bdi> (${ar(i<1?"\u0623\u0642\u0644 \u0645\u0646 1":Math.round(i))}%)</div>
+      <div class="sub">${ar(Number(s.questions_n))} \u0633\u0624\u0627\u0644\u060C \u062D\u062C\u0645 \u062C\u062F\u0648\u0644 \u0627\u0644\u0623\u0633\u0626\u0644\u0629 <bdi>${o(n)} MB</bdi>${i>=60?". \u0627\u0642\u062A\u0631\u0628\u062A \u0645\u0646 \u0627\u0644\u062D\u062F\u060C \u0641\u0643\u0651\u0631 \u0628\u0646\u0642\u0644 \u0627\u0644\u0645\u0648\u0627\u062F \u0627\u0644\u0642\u062F\u064A\u0645\u0629 \u0625\u0644\u0649 \u0627\u0644\u062A\u062E\u0632\u064A\u0646.":""}</div>
+      <div class="bar"><i style="width:${Math.max(i,1).toFixed(1)}%"></i></div>`}catch{$("usage")&&($("usage").innerHTML='<div class="sub">\u062A\u0639\u0630\u0631 \u0642\u0631\u0627\u0621\u0629 \u0627\u0644\u0627\u0633\u062A\u0647\u0644\u0627\u0643.</div>')}}async function suspectAnswers(){showModal('<button class="x" id="cl" aria-label="\u0625\u063A\u0644\u0627\u0642">\u2715</button><h2>\u0623\u062C\u0648\u0628\u0629 \u0645\u0634\u0643\u0648\u0643 \u0628\u0647\u0627</h2><p class="hint">\u062C\u0627\u0631\u064D \u0627\u0644\u062A\u062D\u0644\u064A\u0644\u2026</p>'),$("cl").onclick=closeModal;const t=await sb.rpc("admin_suspect_answers",{p_min:30,p_share:50});if(t.error){modal.querySelector(".hint").textContent=errMsg(t.error);return}const e=t.data||[],s=a=>{const n=a.o||[],i=Math.round(a.top_n*100/a.total),l=Math.round(a.correct_n*100/a.total);return`<div class="item" style="display:block;--sc:#B7791F"><div class="sub" dir="auto">${esc(a.q)}</div>
+      <div class="sub" style="margin-top:6px">\u0623\u063A\u0644\u0628 \u0627\u0644\u0637\u0644\u0627\u0628 (${ar(i)}\u066A \u0645\u0646 ${ar(a.total)}) \u0627\u062E\u062A\u0627\u0631\u0648\u0627: <b dir="auto">${esc(LET[a.top_opt]||"")}) ${esc(n[a.top_opt]||"")}</b><br>\u0627\u0644\u062C\u0648\u0627\u0628 \u0627\u0644\u0645\u0639\u062A\u0645\u062F: <b dir="auto">${esc(LET[a.a]||"")}) ${esc(n[a.a]||"")}</b> (${ar(l)}\u066A)</div>
+      <div class="acts2" style="margin-top:8px"><button class="ib" data-susq="${esc(a.id)}">\u0641\u062A\u062D \u0627\u0644\u0633\u0624\u0627\u0644</button></div></div>`};showModal('<button class="x" id="cl" aria-label="\u0625\u063A\u0644\u0627\u0642">\u2715</button><h2>\u0623\u062C\u0648\u0628\u0629 \u0645\u0634\u0643\u0648\u0643 \u0628\u0647\u0627</h2><p class="hint">\u0623\u0633\u0626\u0644\u0629 \u0623\u062C\u0627\u0628 \u0639\u0646\u0647\u0627 30 \u0637\u0627\u0644\u0628\u0627\u064B \u0623\u0648 \u0623\u0643\u062B\u0631 \u0648\u0627\u062E\u062A\u0627\u0631 \u0646\u0635\u0641\u0647\u0645 \u0623\u0648 \u0623\u0643\u062B\u0631 \u062E\u064A\u0627\u0631\u0627\u064B \u063A\u064A\u0631 \u0627\u0644\u0645\u0639\u062A\u0645\u062F. \u0642\u062F \u064A\u0643\u0648\u0646 \u0627\u0644\u062C\u0648\u0627\u0628 \u0627\u0644\u0645\u0639\u062A\u0645\u062F \u062E\u0637\u0623\u060C \u0623\u0648 \u0627\u0644\u0633\u0624\u0627\u0644 \u0645\u0628\u0647\u0645\u0627\u064B.</p>'+(e.length?e.map(s).join(""):'<div class="empty">\u0644\u0627 \u062A\u0648\u062C\u062F \u0623\u0633\u0626\u0644\u0629 \u0645\u0634\u0643\u0648\u0643 \u0628\u0647\u0627 \u062D\u0627\u0644\u064A\u0627\u064B.</div>')),$("cl").onclick=closeModal,modal.querySelectorAll("[data-susq]").forEach(a=>a.onclick=()=>{closeModal(),questionForm(a.dataset.susq)})}function questionForm(t,e){if(!Store.subjects.length){toast("\u0623\u0636\u0641 \u0627\u062E\u062A\u0635\u0627\u0635\u0627\u064B \u0648\u0645\u0627\u062F\u0629 \u0623\u0648\u0644\u0627\u064B \u0645\u0646 \u0644\u0648\u062D\u0629 \u0627\u0644\u062A\u062D\u0643\u0645");return}const s=t?QL.find(r=>r.id===t):null,a=s?(s.o||[]).slice(0,6):["","","",""];for(;a.length<4;)a.push("");const n=r=>`<div class="orow"><input type="radio" name="ans" value="${r}" id="r${r}" aria-label="\u0627\u0644\u062C\u0648\u0627\u0628 \u0627\u0644\u0635\u062D\u064A\u062D ${LET[r]}" ${(s?s.a:0)===r?"checked":""}><span class="l">${LET[r]}</span><input class="in" id="o${r}" dir="auto" value="${esc(a[r])}"></div>`;showModal(`<button class="x" id="cl" aria-label="\u0625\u063A\u0644\u0627\u0642">\u2715</button><h2>${s?"\u062A\u0639\u062F\u064A\u0644 \u0627\u0644\u0633\u0624\u0627\u0644":"\u0633\u0624\u0627\u0644 \u062C\u062F\u064A\u062F"}</h2>
+    ${metaFields(s)}
+    <label class="fld"><span>\u0646\u0635 \u0627\u0644\u0633\u0624\u0627\u0644</span><textarea class="in" id="fQ" dir="auto">${esc(s?s.q:"")}</textarea></label>
+    <div class="fld"><span>\u0635\u0648\u0631\u0629 \u0627\u0644\u0633\u0624\u0627\u0644 (\u0627\u062E\u062A\u064A\u0627\u0631\u064A)</span><div id="imgBox"></div>
       <input type="file" id="fImg" accept="image/*" style="display:none">
-      <div class="r2"><button type="button" class="btn line" id="imgPick">اختر صورة</button><button type="button" class="btn line" id="imgDel">إزالة الصورة</button></div></div>
-    <div class="fld"><span>الخيارات، واختر الجواب الصحيح بالدائرة</span>
-    <div id="qos">${o.map((_,i)=>qorow(i)).join('')}</div>
-    <button type="button" class="btn line block" id="qmore" style="${o.length>=6?'display:none':''}">+ خيار إضافي (حتى 6)</button></div>
-    <label class="fld"><span>الشرح</span><textarea class="in" id="fX" dir="auto">${esc(q?q.e:'')}</textarea></label>
+      <div class="r2"><button type="button" class="btn line" id="imgPick">\u0627\u062E\u062A\u0631 \u0635\u0648\u0631\u0629</button><button type="button" class="btn line" id="imgDel">\u0625\u0632\u0627\u0644\u0629 \u0627\u0644\u0635\u0648\u0631\u0629</button></div></div>
+    <div class="fld"><span>\u0627\u0644\u062E\u064A\u0627\u0631\u0627\u062A\u060C \u0648\u0627\u062E\u062A\u0631 \u0627\u0644\u062C\u0648\u0627\u0628 \u0627\u0644\u0635\u062D\u064A\u062D \u0628\u0627\u0644\u062F\u0627\u0626\u0631\u0629</span>
+    <div id="qos">${a.map((r,u)=>n(u)).join("")}</div>
+    <button type="button" class="btn line block" id="qmore" style="${a.length>=6?"display:none":""}">+ \u062E\u064A\u0627\u0631 \u0625\u0636\u0627\u0641\u064A (\u062D\u062A\u0649 6)</button></div>
+    <label class="fld"><span>\u0627\u0644\u0634\u0631\u062D</span><textarea class="in" id="fX" dir="auto">${esc(s?s.e:"")}</textarea></label>
     <p class="err" id="er" role="alert"></p>
-    <div class="r2"><button class="btn" id="sv">حفظ</button>${q?'':'<button class="btn line" id="sv2">حفظ وإضافة آخر</button>'}</div>`);
-  $('cl').onclick=closeModal;
-  bindMeta();
-  let nOpt=o.length;
-  $('qmore').onclick=()=>{if(nOpt>=6)return;$('qos').insertAdjacentHTML('beforeend',qorow(nOpt));nOpt++;if(nOpt>=6)$('qmore').style.display='none'};
-  let pend=null,gone=false;
-  const curImg=q?(q.img||null):null;
-  function imgPaint(){
-    const shown=pend?pend.url:(curImg&&!gone?IMG_BASE+curImg:'');
-    $('imgBox').innerHTML=shown?`<img src="${esc(shown)}" alt="" style="max-width:100%;max-height:220px;border-radius:10px;display:block;margin:6px auto;background:#fff">`+(pend?`<div class="hint" style="text-align:center"><bdi>${Math.round(pend.blob.size/1024)} KB</bdi></div>`:''):'<div class="hint">لا توجد صورة.</div>';
-    $('imgDel').style.display=shown?'':'none';
-    $('imgPick').textContent=shown?'تغيير الصورة':'اختر صورة';
-  }
-  imgPaint();
-  $('imgPick').onclick=()=>$('fImg').click();
-  $('imgDel').onclick=()=>{if(pend){URL.revokeObjectURL(pend.url);pend=null}else gone=true;imgPaint()};
-  $('fImg').onchange=async()=>{
-    const f=$('fImg').files[0];$('fImg').value='';
-    if(!f)return;
-    $('er').textContent='';
-    try{
-      const b=await shrinkImage(f);
-      if(pend)URL.revokeObjectURL(pend.url);
-      pend={blob:b,url:URL.createObjectURL(b)};gone=false;imgPaint();
-    }catch(e){$('er').textContent=e.message||'تعذر معالجة الصورة'}
-  };
-  const submit=async(again)=>{
-    const meta=readMeta(),text=$('fQ').value.trim();
-    if(!text){$('er').textContent='اكتب نص السؤال.';return}
-    const picked=+(document.querySelector('input[name=ans]:checked')||{value:0}).value;
-    const opts=[];let a=-1;
-    for(let i=0;i<nOpt;i++){const t=$('o'+i).value.trim();if(t){if(i===picked)a=opts.length;opts.push(t)}}
-    if(opts.length<2){$('er').textContent='اكتب خيارين على الأقل.';return}
-    if(a<0){$('er').textContent='الخيار المحدد كجواب صحيح فارغ. حدد خياراً مكتوباً.';return}
-    const data={s:meta.s,sy:meta.sy,ex:meta.ex,y:meta.y,free:meta.free,q:text,o:opts,a:a,e:$('fX').value.trim(),t:q?(q.t||0):Date.now()};
-    $('sv').disabled=true;
-    let newPath=null;
-    try{
-      if(pend)newPath=await uploadImg(pend.blob);
-      data.img=pend?newPath:(gone?null:curImg);
-      try{await put('questions',q?q.id:newId('q'),data)}catch(e){if(newPath)deleteImgFile(newPath);throw e}
-      if(curImg&&curImg!==data.img)deleteImgFile(curImg);
-      A.last={s:meta.s,ex:meta.ex,y:meta.y||A.last.y,free:meta.free};
-      toast('تم حفظ السؤال');
-      if(again){questionForm(null)}else closeModal();
-    }catch(e){$('er').textContent=(e&&e.message&&!e.code&&/[\u0600-\u06FF]/.test(e.message))?e.message:errMsg(e);$('sv').disabled=false}
-  };
-  $('sv').onclick=()=>submit(false);
-  const s2=$('sv2');if(s2)s2.onclick=()=>submit(true);
-  $('fQ').focus();
-}
-/* إضافة جماعية: نص منسق */
-function normKey(k){
-  k=String(k).trim().toLowerCase().charAt(0);
-  const m={'ا':'أ','أ':'أ','ب':'ب','ج':'ج','د':'د','ه':'هـ','a':'أ','b':'ب','c':'ج','d':'د','e':'هـ','f':'و'};
-  return m[k]||k;
-}
-function parseBulk(text){
-  const blocks=text.split(/^\s*-{3,}\s*$/m).map(b=>b.trim()).filter(Boolean);
-  const items=[],errors=[];
-  blocks.forEach((b,bi)=>{
-    const q=[],o=[],ex=[];let ans=null,mode='q',m,img=null;
-    for(const raw of b.split('\n')){
-      const l=raw.trim();
-      if(!l){if(mode==='e')ex.push('');continue}
-      if(m=l.match(/^(?:الجواب|الاجابة|الإجابة|answer)\s*[:：]\s*(.+)$/i)){ans=m[1].trim();mode='a';continue}
-      if(m=l.match(/^(?:الشرح|التفسير|explanation)\s*[:：]\s*(.*)$/i)){ex.push(m[1]);mode='e';continue}
-      if(mode!=='e'&&(m=l.match(/^(?:image|img|صورة)\s*[:：]\s*(\S.*)$/i))){img=m[1].trim();continue}
-      if(mode==='e'){ex.push(l);continue}
-      if(mode!=='a'&&(m=l.match(/^([أابجدهـA-Fa-f])\s*[\)\.\-:]\s*(.+)$/))){o.push({k:normKey(m[1]),t:m[2].trim()});mode='o';continue}
-      if(mode==='q')q.push(l);else if(mode==='o'&&o.length)o[o.length-1].t+=' '+l;
-    }
-    const n=bi+1;
-    if(!q.length){errors.push('السؤال '+ar(n)+': لا يوجد نص للسؤال.');return}
-    if(o.length<2){errors.push('السؤال '+ar(n)+': يحتاج خيارين على الأقل.');return}
-    if(o.length>6){errors.push('السؤال '+ar(n)+': أكثر من 6 خيارات.');return}
-    let a=-1;
-    if(ans){const k=normKey(ans);a=o.findIndex(x=>x.k===k);if(a<0&&/^[1-6]/.test(ans.trim()))a=parseInt(ans.trim(),10)-1}
-    if(a<0||a>=o.length){errors.push('السؤال '+ar(n)+': الجواب غير محدد أو لا يطابق الخيارات.');return}
-    if(img&&!/\.(jpe?g|png|webp)$/i.test(img)){errors.push('السؤال '+ar(n)+': اسم الصورة يجب أن ينتهي بـ jpg أو png أو webp.');return}
-    items.push({q:q.join('\n'),o:o.map(x=>x.t),a:a,e:ex.join('\n').trim(),img:img});
-  });
-  return {items,errors};
-}
-function bulkForm(){
-  if(!Store.subjects.length){toast('أضف اختصاصاً ومادة أولاً من لوحة التحكم');return}
-  showModal(`<button class="x" id="cl" aria-label="إغلاق">✕</button><h2>إضافة جماعية</h2>
+    <div class="r2"><button class="btn" id="sv">\u062D\u0641\u0638</button>${s?"":'<button class="btn line" id="sv2">\u062D\u0641\u0638 \u0648\u0625\u0636\u0627\u0641\u0629 \u0622\u062E\u0631</button>'}</div>`),$("cl").onclick=closeModal,bindMeta();let i=a.length;$("qmore").onclick=()=>{i>=6||($("qos").insertAdjacentHTML("beforeend",n(i)),i++,i>=6&&($("qmore").style.display="none"))};let l=null,o=!1;const c=s&&s.img||null;function p(){const r=l?l.url:c&&!o?IMG_BASE+c:"";$("imgBox").innerHTML=r?`<img src="${esc(r)}" alt="" style="max-width:100%;max-height:220px;border-radius:10px;display:block;margin:6px auto;background:#fff">`+(l?`<div class="hint" style="text-align:center"><bdi>${Math.round(l.blob.size/1024)} KB</bdi></div>`:""):'<div class="hint">\u0644\u0627 \u062A\u0648\u062C\u062F \u0635\u0648\u0631\u0629.</div>',$("imgDel").style.display=r?"":"none",$("imgPick").textContent=r?"\u062A\u063A\u064A\u064A\u0631 \u0627\u0644\u0635\u0648\u0631\u0629":"\u0627\u062E\u062A\u0631 \u0635\u0648\u0631\u0629"}p(),$("imgPick").onclick=()=>$("fImg").click(),$("imgDel").onclick=()=>{l?(URL.revokeObjectURL(l.url),l=null):o=!0,p()},$("fImg").onchange=async()=>{const r=$("fImg").files[0];if($("fImg").value="",!!r){$("er").textContent="";try{const u=await shrinkImage(r);l&&URL.revokeObjectURL(l.url),l={blob:u,url:URL.createObjectURL(u)},o=!1,p()}catch(u){$("er").textContent=u.message||"\u062A\u0639\u0630\u0631 \u0645\u0639\u0627\u0644\u062C\u0629 \u0627\u0644\u0635\u0648\u0631\u0629"}}};const d=async r=>{const u=readMeta(),f=$("fQ").value.trim();if(!f){$("er").textContent="\u0627\u0643\u062A\u0628 \u0646\u0635 \u0627\u0644\u0633\u0624\u0627\u0644.";return}const m=+(document.querySelector("input[name=ans]:checked")||{value:0}).value,h=[];let y=-1;for(let x=0;x<i;x++){const q=$("o"+x).value.trim();q&&(x===m&&(y=h.length),h.push(q))}if(h.length<2){$("er").textContent="\u0627\u0643\u062A\u0628 \u062E\u064A\u0627\u0631\u064A\u0646 \u0639\u0644\u0649 \u0627\u0644\u0623\u0642\u0644.";return}if(y<0){$("er").textContent="\u0627\u0644\u062E\u064A\u0627\u0631 \u0627\u0644\u0645\u062D\u062F\u062F \u0643\u062C\u0648\u0627\u0628 \u0635\u062D\u064A\u062D \u0641\u0627\u0631\u063A. \u062D\u062F\u062F \u062E\u064A\u0627\u0631\u0627\u064B \u0645\u0643\u062A\u0648\u0628\u0627\u064B.";return}const _={s:u.s,sy:u.sy,ex:u.ex,y:u.y,free:u.free,q:f,o:h,a:y,e:$("fX").value.trim(),t:s?s.t||0:Date.now()};$("sv").disabled=!0;{const x=$("sv2");x&&(x.disabled=!0)}let S=null;try{l&&(S=await uploadImg(l.blob)),_.img=l?S:o?null:c;const x=s?s.id:newId("q");try{await put("questions",x,_)}catch(q){throw S&&deleteImgFile(S),q}s&&purgeAi(x),c&&c!==_.img&&deleteImgFile(c),A.last={s:u.s,ex:u.ex,y:u.y||A.last.y,free:u.free},toast("\u062A\u0645 \u062D\u0641\u0638 \u0627\u0644\u0633\u0624\u0627\u0644"),r?questionForm(null):closeModal()}catch(x){$("er").textContent=x&&x.message&&!x.code&&/[\u0600-\u06FF]/.test(x.message)?x.message:errMsg(x),$("sv").disabled=!1;{const q=$("sv2");q&&(q.disabled=!1)}}};$("sv").onclick=()=>d(!1);const b=$("sv2");b&&(b.onclick=()=>d(!0)),$("fQ").focus()}function normKey(t){return t=String(t).trim().toLowerCase().charAt(0),{\u0627:"\u0623",\u0623:"\u0623",\u0628:"\u0628",\u062C:"\u062C",\u062F:"\u062F",\u0647:"\u0647\u0640",a:"\u0623",b:"\u0628",c:"\u062C",d:"\u062F",e:"\u0647\u0640",f:"\u0648"}[t]||t}const BULK_ORDER=["\u0623","\u0628","\u062C","\u062F","\u0647\u0640","\u0648"];function parseBulk(t){const e=t.split(/^\s*-{3,}\s*$/m).map(n=>n.trim()).filter(Boolean),s=[],a=[];return e.forEach((n,i)=>{const l=[],o=[],c=[];let p=null,d="q",b,r=null;for(const m of n.split(`
+`)){const h=m.trim();if(!h){d==="e"&&c.push("");continue}if(b=h.match(/^(?:الجواب|الاجابة|الإجابة|answer)\s*[:：]\s*(.+)$/i)){p=b[1].trim(),d="a";continue}if(b=h.match(/^(?:الشرح|التفسير|explanation)\s*[:：]\s*(.*)$/i)){c.push(b[1]),d="e";continue}if(d!=="e"&&(b=h.match(/^(?:image|img|صورة)\s*[:：]\s*(\S.*)$/i))){r=b[1].trim();continue}if(d==="e"){c.push(h);continue}if(d!=="a"&&(b=h.match(/^([أابجدهـA-Fa-f])\s*[\)\.\-:]\s*(.+)$/))&&normKey(b[1])===BULK_ORDER[o.length]){o.push({k:normKey(b[1]),t:b[2].trim()}),d="o";continue}d==="q"?l.push(h):d==="o"&&o.length&&(o[o.length-1].t+=" "+h)}const u=i+1;if(!l.length){a.push("\u0627\u0644\u0633\u0624\u0627\u0644 "+ar(u)+": \u0644\u0627 \u064A\u0648\u062C\u062F \u0646\u0635 \u0644\u0644\u0633\u0624\u0627\u0644.");return}if(o.length<2){a.push("\u0627\u0644\u0633\u0624\u0627\u0644 "+ar(u)+": \u064A\u062D\u062A\u0627\u062C \u062E\u064A\u0627\u0631\u064A\u0646 \u0639\u0644\u0649 \u0627\u0644\u0623\u0642\u0644.");return}if(o.length>6){a.push("\u0627\u0644\u0633\u0624\u0627\u0644 "+ar(u)+": \u0623\u0643\u062B\u0631 \u0645\u0646 6 \u062E\u064A\u0627\u0631\u0627\u062A.");return}let f=-1;if(p){const m=normKey(p);f=o.findIndex(h=>h.k===m),f<0&&/^[1-6]/.test(p.trim())&&(f=parseInt(p.trim(),10)-1)}if(f<0||f>=o.length){a.push("\u0627\u0644\u0633\u0624\u0627\u0644 "+ar(u)+": \u0627\u0644\u062C\u0648\u0627\u0628 \u063A\u064A\u0631 \u0645\u062D\u062F\u062F \u0623\u0648 \u0644\u0627 \u064A\u0637\u0627\u0628\u0642 \u0627\u0644\u062E\u064A\u0627\u0631\u0627\u062A.");return}if(r&&!/\.(jpe?g|png|webp)$/i.test(r)){a.push("\u0627\u0644\u0633\u0624\u0627\u0644 "+ar(u)+": \u0627\u0633\u0645 \u0627\u0644\u0635\u0648\u0631\u0629 \u064A\u062C\u0628 \u0623\u0646 \u064A\u0646\u062A\u0647\u064A \u0628\u0640 jpg \u0623\u0648 png \u0623\u0648 webp.");return}s.push({q:l.join(`
+`),o:o.map(m=>m.t),a:f,e:c.join(`
+`).trim(),img:r})}),{items:s,errors:a}}function bulkForm(){if(!Store.subjects.length){toast("\u0623\u0636\u0641 \u0627\u062E\u062A\u0635\u0627\u0635\u0627\u064B \u0648\u0645\u0627\u062F\u0629 \u0623\u0648\u0644\u0627\u064B \u0645\u0646 \u0644\u0648\u062D\u0629 \u0627\u0644\u062A\u062D\u0643\u0645");return}showModal(`<button class="x" id="cl" aria-label="\u0625\u063A\u0644\u0627\u0642">\u2715</button><h2>\u0625\u0636\u0627\u0641\u0629 \u062C\u0645\u0627\u0639\u064A\u0629</h2>
     ${metaFields(null)}
-    <div class="hint">افصل بين الأسئلة بسطر فيه <bdi>---</bdi> فقط. الصيغة:<pre dir="ltr">What is the capital of Iraq?
+    <div class="hint">\u0627\u0641\u0635\u0644 \u0628\u064A\u0646 \u0627\u0644\u0623\u0633\u0626\u0644\u0629 \u0628\u0633\u0637\u0631 \u0641\u064A\u0647 <bdi>---</bdi> \u0641\u0642\u0637. \u0627\u0644\u0635\u064A\u063A\u0629:<pre dir="ltr">What is the capital of Iraq?
 A) Erbil
 B) Baghdad
 C) Basra
@@ -1847,204 +228,22 @@ D) Mosul
 Answer: B
 Explanation: Baghdad is the capital.
 Image: figure1.jpg
----</pre>سطر <bdi>Image:</bdi> اختياري، ويُطابَق مع اسم الصورة في ملف الصور.</div>
-    <div class="banner" id="lastq" style="margin-bottom:12px"><span class="hint" style="margin:0">جارٍ تحميل آخر الأسئلة المضافة…</span></div>
-    <label class="fld"><span>الأسئلة</span><textarea class="in" id="bt" dir="auto" style="min-height:180px"></textarea></label>
-    <div class="fld"><span>صور الأسئلة (اختياري)</span>
+---</pre>\u0633\u0637\u0631 <bdi>Image:</bdi> \u0627\u062E\u062A\u064A\u0627\u0631\u064A\u060C \u0648\u064A\u064F\u0637\u0627\u0628\u064E\u0642 \u0645\u0639 \u0627\u0633\u0645 \u0627\u0644\u0635\u0648\u0631\u0629 \u0641\u064A \u0645\u0644\u0641 \u0627\u0644\u0635\u0648\u0631.</div>
+    <div class="banner" id="lastq" style="margin-bottom:12px"><span class="hint" style="margin:0">\u062C\u0627\u0631\u064D \u062A\u062D\u0645\u064A\u0644 \u0622\u062E\u0631 \u0627\u0644\u0623\u0633\u0626\u0644\u0629 \u0627\u0644\u0645\u0636\u0627\u0641\u0629\u2026</span></div>
+    <label class="fld"><span>\u0627\u0644\u0623\u0633\u0626\u0644\u0629</span><textarea class="in" id="bt" dir="auto" style="min-height:180px"></textarea></label>
+    <div class="fld"><span>\u0635\u0648\u0631 \u0627\u0644\u0623\u0633\u0626\u0644\u0629 (\u0627\u062E\u062A\u064A\u0627\u0631\u064A)</span>
       <input type="file" id="bimg" accept=".zip,image/*" multiple style="display:none">
-      <button type="button" class="btn line block" id="bimgPick">اختر ملف الصور (ZIP أو عدة صور)</button>
+      <button type="button" class="btn line block" id="bimgPick">\u0627\u062E\u062A\u0631 \u0645\u0644\u0641 \u0627\u0644\u0635\u0648\u0631 (ZIP \u0623\u0648 \u0639\u062F\u0629 \u0635\u0648\u0631)</button>
       <div class="hint" id="bimgInfo" style="margin-top:6px"></div></div>
     <p class="err" id="er" role="alert"></p>
     <div id="pv"></div>
-    <button class="btn block" id="an">تحليل النص</button>`);
-  $('cl').onclick=closeModal;
-  bindMeta();
-  async function loadLast(){
-    const box=$('lastq');if(!box)return;
-    const sid=$('fS').value;
-    try{
-      const r=await sb.from('questions').select('id,q,t').eq('s',sid).order('t',{ascending:false}).limit(1000);
-      if(r.error)throw r.error;
-      if($('fS').value!==sid||!$('lastq'))return;
-      const rows=r.data||[];
-      if(!rows.length){box.innerHTML='لا توجد أسئلة مضافة بهذه المادة بعد، فابدأ من أول سؤال.';return}
-      let k=0;while(k+1<rows.length&&Number(rows[k].t)-Number(rows[k+1].t)<=1)k++;
-      const first=rows[k],last=rows[0],n=k+1,cut=t=>{t=String(t).replace(/\s+/g,' ').trim();return t.length>90?t.slice(0,90)+'…':t};
-      box.innerHTML=`<b>آخر نص مضاف بهذه المادة</b> (${ar(n>=1000?'أكثر من 1000':n)} سؤال):<div dir="ltr" style="text-align:left;margin-top:6px;line-height:1.6"><b>First:</b> ${esc(cut(first.q))}<br><b>Last:</b> ${esc(cut(last.q))}</div>${n<1000?`<button class="btn line block" type="button" id="undob" style="margin-top:10px">↩ تراجع عن هذه الدفعة (${ar(n)} سؤال)</button>`:''}`;
-      const ub=$('undob');
-      if(ub)ub.onclick=async()=>{
-        if(!(await askConfirm('التراجع عن آخر دفعة','سيتم حذف آخر '+ar(n)+' سؤال أُضيفت دفعة واحدة في هذه المادة. تبقى بتبويب «المحذوفات» 30 يوماً ويمكنك استرجاعها.','تراجع')))return;
-        ub.disabled=true;
-        const d=await sb.rpc('admin_undo_last_batch',{p_subject:sid});
-        if(d.error){ub.disabled=false;toast(errMsg(d.error));return}
-        await loadAll();toast('تم التراجع عن '+ar(d.data)+' سؤال');loadLast();
-      };
-    }catch(e){if($('lastq'))$('lastq').textContent='تعذر تحميل آخر نص مضاف.'}
-  }
-  $('fS').addEventListener('change',loadLast);
-  loadLast();
-  let parsed=null;
-  const imgs=new Map();
-  const baseName=n=>String(n).split('/').pop().split('\\').pop().toLowerCase();
-  const errText=e=>(e&&e.message&&!e.code&&/[\u0600-\u06FF]/.test(e.message))?e.message:errMsg(e);
-  $('bimgPick').onclick=()=>$('bimg').click();
-  $('bimg').onchange=async()=>{
-    const fl=Array.from($('bimg').files||[]);$('bimg').value='';
-    if(!fl.length)return;
-    $('bimgInfo').textContent='جارٍ قراءة الصور…';
-    try{
-      for(const f of fl){
-        if(/\.zip$/i.test(f.name)||/zip/.test(f.type)){
-          for(const z of await readZip(await f.arrayBuffer())){
-            const b=baseName(z.name);
-            if(b.startsWith('.')||/__macosx/i.test(z.name)||!/\.(jpe?g|png|webp)$/.test(b))continue;
-            imgs.set(b,{name:b,data:z.data});
-          }
-        }else if(/^image\//.test(f.type)||/\.(jpe?g|png|webp)$/i.test(f.name)){
-          imgs.set(baseName(f.name),{name:f.name,data:new Uint8Array(await f.arrayBuffer())});
-        }
-      }
-      parsed=null;$('an').textContent='تحليل النص';$('pv').innerHTML='';
-      $('bimgInfo').textContent=imgs.size?'تم تحميل '+ar(imgs.size)+' صورة.':'لم أجد صوراً صالحة في الملف.';
-    }catch(e){$('bimgInfo').textContent=errText(e)}
-  };
-  $('an').onclick=async()=>{
-    if(parsed&&parsed.items.length){
-      const meta=readMeta();$('an').disabled=true;
-      const up=new Map();
-      try{
-        const names=Array.from(new Set(parsed.items.filter(x=>x.img).map(x=>baseName(x.img))));
-        const total=names.length;let nDone=0,stop=false;
-        const worker=async()=>{
-          while(!stop&&names.length){
-            const nm=names.shift();
-            try{
-              const path=await uploadImg(await prepImage(imgs.get(nm)));
-              up.set(nm,path);nDone++;
-              $('pv').innerHTML='<div class="banner">جارٍ رفع الصور '+ar(nDone)+' / '+ar(total)+'…</div>';
-            }catch(e){stop=true;throw e}
-          }
-        };
-        if(total){
-          const rs=await Promise.allSettled([worker(),worker(),worker()]);
-          const bad=rs.find(r=>r.status==='rejected');
-          if(bad){up.forEach(p=>deleteImgFile(p));throw bad.reason}
-        }
-        const t0=Date.now();
-        try{
-          await putMany('questions',parsed.items.map((it,i)=>({id:newId('q')+i,s:meta.s,sy:meta.sy,ex:meta.ex,y:meta.y,free:meta.free,q:it.q,o:it.o,a:it.a,e:it.e,img:it.img?up.get(baseName(it.img)):null,t:t0+i})));
-        }catch(e){up.forEach(p=>deleteImgFile(p));throw e}
-        A.last={s:meta.s,ex:meta.ex,y:meta.y||A.last.y,free:meta.free};
-        closeModal();toast('تمت إضافة '+ar(parsed.items.length)+' سؤال');
-      }catch(e){$('er').textContent=errText(e);$('pv').innerHTML='';$('an').disabled=false}
-      return;
-    }
-    parsed=parseBulk($('bt').value);
-    $('er').textContent='';
-    const miss=[];
-    parsed.items=parsed.items.filter(it=>{if(it.img&&!imgs.has(baseName(it.img))){miss.push(it.img);return false}return true});
-    parsed.errors=parsed.errors.concat(miss.map(n=>'الصورة غير موجودة ضمن الصور المختارة: '+n));
-    const withImg=parsed.items.filter(it=>it.img).length;
-    $('pv').innerHTML=`<div class="banner ${parsed.items.length?'ok':''}">تم التعرف على ${ar(parsed.items.length)} سؤال صحيح${withImg?'، منها '+ar(withImg)+' بصور':''}${parsed.errors.length?'، و'+ar(parsed.errors.length)+' فيها مشاكل':''}.</div>${parsed.errors.map(x=>`<p class="err">${esc(x)}</p>`).join('')}`;
-    if(parsed.items.length)$('an').textContent='أضف '+ar(parsed.items.length)+' سؤال';
-    else parsed=null;
-  };
-  $('bt').oninput=()=>{parsed=null;$('an').textContent='تحليل النص';$('pv').innerHTML=''};
-}
-
-
-
-/* ---------- دخول الأدمن ---------- */
-function authShell(inner,notice){
-  view='auth';
-  app.innerHTML=`<div class="top"><div class="brand">${brandHtml()}<small>لوحة التحكم</small></div></div>
-  <div class="auth">${logoPlate(120)}${notice?`<div class="banner">${esc(notice)}</div>`:''}${inner}</div>`;
-}
-function adminLogin(notice){
-  authShell(`<label class="fld"><span>الإيميل</span><input class="in" id="au-e" type="email" inputmode="email" autocomplete="email" style="direction:ltr;text-align:left"></label>
-    <label class="fld"><span>كلمة السر</span><input class="in" id="au-p" type="password" autocomplete="current-password" style="direction:ltr;text-align:left"></label>
+    <button class="btn block" id="an">\u062A\u062D\u0644\u064A\u0644 \u0627\u0644\u0646\u0635</button>`),$("cl").onclick=closeModal,bindMeta();async function t(){const i=$("lastq");if(!i)return;const l=$("fS").value;try{const o=await sb.from("questions").select("id,q,t").eq("s",l).order("t",{ascending:!1}).limit(1e3);if(o.error)throw o.error;if($("fS").value!==l||!$("lastq"))return;const c=o.data||[];if(!c.length){i.innerHTML="\u0644\u0627 \u062A\u0648\u062C\u062F \u0623\u0633\u0626\u0644\u0629 \u0645\u0636\u0627\u0641\u0629 \u0628\u0647\u0630\u0647 \u0627\u0644\u0645\u0627\u062F\u0629 \u0628\u0639\u062F\u060C \u0641\u0627\u0628\u062F\u0623 \u0645\u0646 \u0623\u0648\u0644 \u0633\u0624\u0627\u0644.";return}let p=0;for(;p+1<c.length&&Number(c[p].t)-Number(c[p+1].t)<=1;)p++;const d=c[p],b=c[0],r=p+1,u=m=>(m=String(m).replace(/\s+/g," ").trim(),m.length>90?m.slice(0,90)+"\u2026":m);i.innerHTML=`<b>\u0622\u062E\u0631 \u0646\u0635 \u0645\u0636\u0627\u0641 \u0628\u0647\u0630\u0647 \u0627\u0644\u0645\u0627\u062F\u0629</b> (${ar(r>=1e3?"\u0623\u0643\u062B\u0631 \u0645\u0646 1000":r)} \u0633\u0624\u0627\u0644):<div dir="ltr" style="text-align:left;margin-top:6px;line-height:1.6"><b>First:</b> ${esc(u(d.q))}<br><b>Last:</b> ${esc(u(b.q))}</div>${r<1e3?`<button class="btn line block" type="button" id="undob" style="margin-top:10px">\u21A9 \u062A\u0631\u0627\u062C\u0639 \u0639\u0646 \u0647\u0630\u0647 \u0627\u0644\u062F\u0641\u0639\u0629 (${ar(r)} \u0633\u0624\u0627\u0644)</button>`:""}`;const f=$("undob");f&&(f.onclick=async()=>{if(!await askConfirm("\u0627\u0644\u062A\u0631\u0627\u062C\u0639 \u0639\u0646 \u0622\u062E\u0631 \u062F\u0641\u0639\u0629","\u0633\u064A\u062A\u0645 \u062D\u0630\u0641 \u0622\u062E\u0631 "+ar(r)+" \u0633\u0624\u0627\u0644 \u0623\u064F\u0636\u064A\u0641\u062A \u062F\u0641\u0639\u0629 \u0648\u0627\u062D\u062F\u0629 \u0641\u064A \u0647\u0630\u0647 \u0627\u0644\u0645\u0627\u062F\u0629. \u062A\u0628\u0642\u0649 \u0628\u062A\u0628\u0648\u064A\u0628 \xAB\u0627\u0644\u0645\u062D\u0630\u0648\u0641\u0627\u062A\xBB 30 \u064A\u0648\u0645\u0627\u064B \u0648\u064A\u0645\u0643\u0646\u0643 \u0627\u0633\u062A\u0631\u062C\u0627\u0639\u0647\u0627.","\u062A\u0631\u0627\u062C\u0639"))return;f.disabled=!0;const m=await sb.rpc("admin_undo_last_batch",{p_subject:l});if(m.error){f.disabled=!1,toast(errMsg(m.error));return}await loadAll(),toast("\u062A\u0645 \u0627\u0644\u062A\u0631\u0627\u062C\u0639 \u0639\u0646 "+ar(m.data)+" \u0633\u0624\u0627\u0644"),t()})}catch{$("lastq")&&($("lastq").textContent="\u062A\u0639\u0630\u0631 \u062A\u062D\u0645\u064A\u0644 \u0622\u062E\u0631 \u0646\u0635 \u0645\u0636\u0627\u0641.")}}$("fS").addEventListener("change",t),t();let e=null;const s=new Map,a=i=>String(i).split("/").pop().split("\\").pop().toLowerCase(),n=i=>i&&i.message&&!i.code&&/[\u0600-\u06FF]/.test(i.message)?i.message:errMsg(i);$("bimgPick").onclick=()=>$("bimg").click(),$("bimg").onchange=async()=>{const i=Array.from($("bimg").files||[]);if($("bimg").value="",!!i.length){$("bimgInfo").textContent="\u062C\u0627\u0631\u064D \u0642\u0631\u0627\u0621\u0629 \u0627\u0644\u0635\u0648\u0631\u2026";try{for(const l of i)if(/\.zip$/i.test(l.name)||/zip/.test(l.type))for(const o of await readZip(await l.arrayBuffer())){const c=a(o.name);c.startsWith(".")||/__macosx/i.test(o.name)||!/\.(jpe?g|png|webp)$/.test(c)||s.set(c,{name:c,data:o.data})}else(/^image\//.test(l.type)||/\.(jpe?g|png|webp)$/i.test(l.name))&&s.set(a(l.name),{name:l.name,data:new Uint8Array(await l.arrayBuffer())});e=null,$("an").textContent="\u062A\u062D\u0644\u064A\u0644 \u0627\u0644\u0646\u0635",$("pv").innerHTML="",$("bimgInfo").textContent=s.size?"\u062A\u0645 \u062A\u062D\u0645\u064A\u0644 "+ar(s.size)+" \u0635\u0648\u0631\u0629.":"\u0644\u0645 \u0623\u062C\u062F \u0635\u0648\u0631\u0627\u064B \u0635\u0627\u0644\u062D\u0629 \u0641\u064A \u0627\u0644\u0645\u0644\u0641."}catch(l){$("bimgInfo").textContent=n(l)}}},$("an").onclick=async()=>{if(e&&e.items.length){const o=readMeta();$("an").disabled=!0;const c=new Map;try{const p=Array.from(new Set(e.items.filter(m=>m.img).map(m=>a(m.img)))),d=p.length;let b=0,r=!1;const u=async()=>{for(;!r&&p.length;){const m=p.shift();try{const h=await uploadImg(await prepImage(s.get(m)));c.set(m,h),b++,$("pv").innerHTML='<div class="banner">\u062C\u0627\u0631\u064D \u0631\u0641\u0639 \u0627\u0644\u0635\u0648\u0631 '+ar(b)+" / "+ar(d)+"\u2026</div>"}catch(h){throw r=!0,h}}};if(d){const h=(await Promise.allSettled([u(),u(),u()])).find(y=>y.status==="rejected");if(h)throw c.forEach(y=>deleteImgFile(y)),h.reason}const f=Date.now();try{await putMany("questions",e.items.map((m,h)=>({id:newId("q")+h,s:o.s,sy:o.sy,ex:o.ex,y:o.y,free:o.free,q:m.q,o:m.o,a:m.a,e:m.e,img:m.img?c.get(a(m.img)):null,t:f+h})))}catch(m){throw c.forEach(h=>deleteImgFile(h)),m}A.last={s:o.s,ex:o.ex,y:o.y||A.last.y,free:o.free},closeModal(),toast("\u062A\u0645\u062A \u0625\u0636\u0627\u0641\u0629 "+ar(e.items.length)+" \u0633\u0624\u0627\u0644")}catch(p){$("er").textContent=n(p),$("pv").innerHTML="",$("an").disabled=!1}return}e=parseBulk($("bt").value),$("er").textContent="";const i=[];e.items=e.items.filter(o=>o.img&&!s.has(a(o.img))?(i.push(o.img),!1):!0),e.errors=e.errors.concat(i.map(o=>"\u0627\u0644\u0635\u0648\u0631\u0629 \u063A\u064A\u0631 \u0645\u0648\u062C\u0648\u062F\u0629 \u0636\u0645\u0646 \u0627\u0644\u0635\u0648\u0631 \u0627\u0644\u0645\u062E\u062A\u0627\u0631\u0629: "+o));const l=e.items.filter(o=>o.img).length;$("pv").innerHTML=`<div class="banner ${e.items.length?"ok":""}">\u062A\u0645 \u0627\u0644\u062A\u0639\u0631\u0641 \u0639\u0644\u0649 ${ar(e.items.length)} \u0633\u0624\u0627\u0644 \u0635\u062D\u064A\u062D${l?"\u060C \u0645\u0646\u0647\u0627 "+ar(l)+" \u0628\u0635\u0648\u0631":""}${e.errors.length?"\u060C \u0648"+ar(e.errors.length)+" \u0641\u064A\u0647\u0627 \u0645\u0634\u0627\u0643\u0644":""}.</div>${e.errors.map(o=>`<p class="err">${esc(o)}</p>`).join("")}`,e.items.length?$("an").textContent="\u0623\u0636\u0641 "+ar(e.items.length)+" \u0633\u0624\u0627\u0644":e=null},$("bt").oninput=()=>{e=null,$("an").textContent="\u062A\u062D\u0644\u064A\u0644 \u0627\u0644\u0646\u0635",$("pv").innerHTML=""}}function authShell(t,e){view="auth",app.innerHTML=`<div class="top"><div class="brand">${brandHtml()}<small>\u0644\u0648\u062D\u0629 \u0627\u0644\u062A\u062D\u0643\u0645</small></div></div>
+  <div class="auth">${logoPlate(120)}${e?`<div class="banner">${esc(e)}</div>`:""}${t}</div>`}function adminLogin(t){authShell(`<label class="fld"><span>\u0627\u0644\u0625\u064A\u0645\u064A\u0644</span><input class="in" id="au-e" type="email" inputmode="email" autocomplete="email" style="direction:ltr;text-align:left"></label>
+    <label class="fld"><span>\u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631</span><input class="in" id="au-p" type="password" autocomplete="current-password" style="direction:ltr;text-align:left"></label>
     <p class="err" id="er" role="alert"></p>
-    <button class="btn block" id="au-go">دخول</button>`,notice);
-  ['au-e','au-p'].forEach(id=>{$(id).onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('au-go').click()}}});
-  $('au-go').onclick=async()=>{
-    const email=$('au-e').value.trim(),password=$('au-p').value;
-    if(!email||!password){$('er').textContent='اكتب الإيميل وكلمة السر.';return}
-    $('au-go').disabled=true;
-    try{
-      const r=await sb.auth.signInWithPassword({email:email,password:password});
-      if(r.error){$('er').textContent='الإيميل أو كلمة السر غير صحيحة.';$('au-go').disabled=false;return}
-      startAdmin();
-    }catch(e){$('er').textContent='تعذر الاتصال. جرب مرة ثانية.';$('au-go').disabled=false}
-  };
-}
-// خطوة التحقق الثنائي: رمز على الإيميل (Supabase) أو بديل عبر تلغرام
-function adminOtp(email){
-  authShell(`<p class="hint" style="margin:0 0 10px">تحقق ثنائي: اطلب رمزاً ثم اكتبه هنا.</p>
-    <div style="display:flex;gap:8px;margin-bottom:10px"><button class="btn line" id="ot-m" style="flex:1">رمز على الإيميل</button><button class="btn line" id="ot-t" style="flex:1">رمز على تلغرام</button></div>
-    <label class="fld"><span>الرمز</span><input class="in" id="ot-c" inputmode="numeric" autocomplete="one-time-code" maxlength="10" style="direction:ltr;text-align:center;letter-spacing:4px"></label>
+    <button class="btn block" id="au-go">\u062F\u062E\u0648\u0644</button>`,t),["au-e","au-p"].forEach(e=>{$(e).onkeydown=s=>{s.key==="Enter"&&(s.preventDefault(),$("au-go").click())}}),$("au-go").onclick=async()=>{const e=$("au-e").value.trim(),s=$("au-p").value;if(!e||!s){$("er").textContent="\u0627\u0643\u062A\u0628 \u0627\u0644\u0625\u064A\u0645\u064A\u0644 \u0648\u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631.";return}$("au-go").disabled=!0;try{if((await sb.auth.signInWithPassword({email:e,password:s})).error){$("er").textContent="\u0627\u0644\u0625\u064A\u0645\u064A\u0644 \u0623\u0648 \u0643\u0644\u0645\u0629 \u0627\u0644\u0633\u0631 \u063A\u064A\u0631 \u0635\u062D\u064A\u062D\u0629.",$("au-go").disabled=!1;return}startAdmin()}catch{$("er").textContent="\u062A\u0639\u0630\u0631 \u0627\u0644\u0627\u062A\u0635\u0627\u0644. \u062C\u0631\u0628 \u0645\u0631\u0629 \u062B\u0627\u0646\u064A\u0629.",$("au-go").disabled=!1}}}function adminOtp(t){authShell(`<p class="hint" style="margin:0 0 10px">\u062A\u062D\u0642\u0642 \u062B\u0646\u0627\u0626\u064A: \u0627\u0637\u0644\u0628 \u0631\u0645\u0632\u0627\u064B \u062B\u0645 \u0627\u0643\u062A\u0628\u0647 \u0647\u0646\u0627.</p>
+    <div style="display:flex;gap:8px;margin-bottom:10px"><button class="btn line" id="ot-m" style="flex:1">\u0631\u0645\u0632 \u0639\u0644\u0649 \u0627\u0644\u0625\u064A\u0645\u064A\u0644</button><button class="btn line" id="ot-t" style="flex:1">\u0631\u0645\u0632 \u0639\u0644\u0649 \u062A\u0644\u063A\u0631\u0627\u0645</button></div>
+    <label class="fld"><span>\u0627\u0644\u0631\u0645\u0632</span><input class="in" id="ot-c" inputmode="numeric" autocomplete="one-time-code" maxlength="10" style="direction:ltr;text-align:center;letter-spacing:4px"></label>
     <p class="err" id="er" role="alert"></p>
-    <button class="btn block" id="ot-go">تأكيد</button>
-    <button class="btn line block" id="ot-out" style="margin-top:8px">رجوع</button>`);
-  let ch=null;
-  $('ot-out').onclick=adminLogout;
-  $('ot-m').onclick=async()=>{
-    $('ot-m').disabled=true;$('er').textContent='';
-    const r=await sb.auth.signInWithOtp({email:email,options:{shouldCreateUser:false}});
-    if(r.error){$('er').textContent='تعذر إرسال الرمز إلى الإيميل. جرب تلغرام.';$('ot-m').disabled=false;return}
-    ch='email';toast('أُرسل الرمز إلى الإيميل');setTimeout(()=>{$('ot-m').disabled=false},30000);$('ot-c').focus();
-  };
-  $('ot-t').onclick=async()=>{
-    $('ot-t').disabled=true;$('er').textContent='';
-    const r=await sb.functions.invoke('admin-otp',{body:{action:'send'}});
-    if(r.error||(r.data&&r.data.error)){$('er').textContent='تعذر إرسال الرمز إلى تلغرام.';$('ot-t').disabled=false;return}
-    ch='tg';toast('أُرسل الرمز إلى تلغرام');setTimeout(()=>{$('ot-t').disabled=false},30000);$('ot-c').focus();
-  };
-  $('ot-c').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('ot-go').click()}};
-  $('ot-go').onclick=async()=>{
-    const code=$('ot-c').value.trim();
-    if(!/^\d{4,10}$/.test(code)){$('er').textContent='اكتب الرمز كاملاً.';return}
-    if(!ch){$('er').textContent='اطلب الرمز أولاً.';return}
-    $('ot-go').disabled=true;$('er').textContent='';
-    try{
-      let ok=false;
-      if(ch==='email'){const r=await sb.auth.verifyOtp({email:email,token:code,type:'email'});ok=!r.error}
-      else{const r=await sb.functions.invoke('admin-otp',{body:{action:'verify',code:code}});ok=!r.error&&r.data&&r.data.ok}
-      if(!ok){$('er').textContent='الرمز غير صحيح أو منتهي.';$('ot-go').disabled=false;return}
-      startAdmin();
-    }catch(e){$('er').textContent='تعذر الاتصال.';$('ot-go').disabled=false}
-  };
-}
-async function adminLogout(){
-  try{await sb.auth.signOut({scope:'local'})}catch(e){}
-  Store.user=null;Store.isAdmin=false;Store.ready=false;
-  adminLogin();
-}
-async function startAdmin(){
-  boot();
-  try{
-    const g=await Promise.race([sb.auth.getSession(),new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),10000))]);
-    if(!g.data.session){adminLogin();return}
-    Store.user=g.data.session.user;
-    const gt=await sb.rpc('admin_gate');
-    // fail closed: if the gate cannot be read, the panel does not open (the catch below shows the retry screen)
-    if(gt.error||!gt.data)throw gt.error||new Error('gate');
-    if(gt.data.required&&!gt.data.ok){adminOtp(Store.user.email);return}
-    await loadMe();
-    if(!Store.isAdmin){
-      try{await sb.auth.signOut({scope:'local'})}catch(e){}
-      Store.user=null;adminLogin('هذا الحساب ليس لديه صلاحية الدخول إلى لوحة التحكم.');return;
-    }
-    await loadAll();
-    Store.ready=true;admin();
-  }catch(e){app.innerHTML=`<div class="top"><div class="brand">${brandHtml()}<small>لوحة التحكم</small></div></div><p class="empty">تعذر تحميل البيانات. تأكد من الاتصال وأعد فتح الصفحة.</p><button class="btn block" data-reload="1">إعادة المحاولة</button>`}
-}
-document.addEventListener('pointerdown',function(e){
-  var t=e.target.closest&&e.target.closest('.btn,.row,.opt,.ib,.pill,.seg button,.back,.x,.cl');
-  if(!t||t.disabled)return;
-  var r=t.getBoundingClientRect(),d=Math.max(r.width,r.height)*2,sp=document.createElement('span');
-  sp.className='rp';
-  sp.style.cssText='width:'+d+'px;height:'+d+'px;left:'+(e.clientX-r.left-d/2)+'px;top:'+(e.clientY-r.top-d/2)+'px';
-  t.appendChild(sp);setTimeout(function(){sp.remove()},700);
-  try{if(navigator.vibrate)navigator.vibrate(6)}catch(x){}
-},{passive:true});
-startAdmin();
+    <button class="btn block" id="ot-go">\u062A\u0623\u0643\u064A\u062F</button>
+    <button class="btn line block" id="ot-out" style="margin-top:8px">\u0631\u062C\u0648\u0639</button>`);let e=null;$("ot-out").onclick=adminLogout,$("ot-m").onclick=async()=>{if($("ot-m").disabled=!0,$("er").textContent="",(await sb.auth.signInWithOtp({email:t,options:{shouldCreateUser:!1}})).error){$("er").textContent="\u062A\u0639\u0630\u0631 \u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0631\u0645\u0632 \u0625\u0644\u0649 \u0627\u0644\u0625\u064A\u0645\u064A\u0644. \u062C\u0631\u0628 \u062A\u0644\u063A\u0631\u0627\u0645.",$("ot-m").disabled=!1;return}e="email",toast("\u0623\u064F\u0631\u0633\u0644 \u0627\u0644\u0631\u0645\u0632 \u0625\u0644\u0649 \u0627\u0644\u0625\u064A\u0645\u064A\u0644"),setTimeout(()=>{$("ot-m").disabled=!1},3e4),$("ot-c").focus()},$("ot-t").onclick=async()=>{$("ot-t").disabled=!0,$("er").textContent="";const s=await sb.functions.invoke("admin-otp",{body:{action:"send"}});if(s.error||s.data&&s.data.error){$("er").textContent="\u062A\u0639\u0630\u0631 \u0625\u0631\u0633\u0627\u0644 \u0627\u0644\u0631\u0645\u0632 \u0625\u0644\u0649 \u062A\u0644\u063A\u0631\u0627\u0645.",$("ot-t").disabled=!1;return}e="tg",toast("\u0623\u064F\u0631\u0633\u0644 \u0627\u0644\u0631\u0645\u0632 \u0625\u0644\u0649 \u062A\u0644\u063A\u0631\u0627\u0645"),setTimeout(()=>{$("ot-t").disabled=!1},3e4),$("ot-c").focus()},$("ot-c").onkeydown=s=>{s.key==="Enter"&&(s.preventDefault(),$("ot-go").click())},$("ot-go").onclick=async()=>{const s=$("ot-c").value.trim();if(!/^\d{4,10}$/.test(s)){$("er").textContent="\u0627\u0643\u062A\u0628 \u0627\u0644\u0631\u0645\u0632 \u0643\u0627\u0645\u0644\u0627\u064B.";return}if(!e){$("er").textContent="\u0627\u0637\u0644\u0628 \u0627\u0644\u0631\u0645\u0632 \u0623\u0648\u0644\u0627\u064B.";return}$("ot-go").disabled=!0,$("er").textContent="";try{let a=!1;if(e==="email")a=!(await sb.auth.verifyOtp({email:t,token:s,type:"email"})).error;else{const n=await sb.functions.invoke("admin-otp",{body:{action:"verify",code:s}});a=!n.error&&n.data&&n.data.ok}if(!a){$("er").textContent="\u0627\u0644\u0631\u0645\u0632 \u063A\u064A\u0631 \u0635\u062D\u064A\u062D \u0623\u0648 \u0645\u0646\u062A\u0647\u064A.",$("ot-go").disabled=!1;return}startAdmin()}catch{$("er").textContent="\u062A\u0639\u0630\u0631 \u0627\u0644\u0627\u062A\u0635\u0627\u0644.",$("ot-go").disabled=!1}}}async function adminLogout(){try{const t=await sb.auth.signOut({scope:"global"});t&&t.error&&await sb.auth.signOut({scope:"local"})}catch{try{await sb.auth.signOut({scope:"local"})}catch{}}Store.user=null,Store.isAdmin=!1,Store.ready=!1,adminLogin()}async function startAdmin(){boot();try{const t=await Promise.race([sb.auth.getSession(),new Promise((s,a)=>setTimeout(()=>a(new Error("timeout")),1e4))]);if(!t.data.session){adminLogin();return}Store.user=t.data.session.user;const e=await sb.rpc("admin_gate");if(e.error||!e.data)throw e.error||new Error("gate");if(e.data.required&&!e.data.ok){adminOtp(Store.user.email);return}if(await loadMe(),!Store.isAdmin){try{await sb.auth.signOut({scope:"local"})}catch{}Store.user=null,adminLogin("\u0647\u0630\u0627 \u0627\u0644\u062D\u0633\u0627\u0628 \u0644\u064A\u0633 \u0644\u062F\u064A\u0647 \u0635\u0644\u0627\u062D\u064A\u0629 \u0627\u0644\u062F\u062E\u0648\u0644 \u0625\u0644\u0649 \u0644\u0648\u062D\u0629 \u0627\u0644\u062A\u062D\u0643\u0645.");return}await loadAll(),Store.ready=!0,admin()}catch{app.innerHTML=`<div class="top"><div class="brand">${brandHtml()}<small>\u0644\u0648\u062D\u0629 \u0627\u0644\u062A\u062D\u0643\u0645</small></div></div><p class="empty">\u062A\u0639\u0630\u0631 \u062A\u062D\u0645\u064A\u0644 \u0627\u0644\u0628\u064A\u0627\u0646\u0627\u062A. \u062A\u0623\u0643\u062F \u0645\u0646 \u0627\u0644\u0627\u062A\u0635\u0627\u0644 \u0648\u0623\u0639\u062F \u0641\u062A\u062D \u0627\u0644\u0635\u0641\u062D\u0629.</p><button class="btn block" data-reload="1">\u0625\u0639\u0627\u062F\u0629 \u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0629</button>`}}document.addEventListener("pointerdown",function(t){var e=t.target.closest&&t.target.closest(".btn,.row,.opt,.ib,.pill,.seg button,.back,.x,.cl");if(!(!e||e.disabled)){var s=e.getBoundingClientRect(),a=Math.max(s.width,s.height)*2,n=document.createElement("span");n.className="rp",n.style.cssText="width:"+a+"px;height:"+a+"px;left:"+(t.clientX-s.left-a/2)+"px;top:"+(t.clientY-s.top-a/2)+"px",e.appendChild(n),setTimeout(function(){n.remove()},700);try{navigator.vibrate&&navigator.vibrate(6)}catch{}}},{passive:!0}),startAdmin();

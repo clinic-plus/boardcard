@@ -14,6 +14,10 @@
 /sw.js
   Cache-Control: no-cache
 
+# The update check reads this tiny file; it must never be served from a cache.
+/version.json
+  Cache-Control: no-store
+
 # The admin panel is never stored by browsers or shown by search engines.
 # Cloudflare serves admin.html at /admin (it drops the .html), so both paths are listed.
 /admin
@@ -23,5 +27,8 @@
   Cache-Control: no-store
   X-Robots-Tag: noindex, nofollow
 /admin.js
+  Cache-Control: no-cache
+  X-Robots-Tag: noindex, nofollow
+/admin.css
   Cache-Control: no-cache
   X-Robots-Tag: noindex, nofollow
