@@ -19,5 +19,5 @@
 :root[data-lite][data-theme=dark]{--glass:rgba(24,48,80,.94);--glass-strong:rgba(16,36,62,.98);--field:rgba(255,255,255,.1)}
 @media(prefers-color-scheme:dark){:root[data-lite]:not([data-theme=light]){--glass:rgba(24,48,80,.94);--glass-strong:rgba(16,36,62,.98);--field:rgba(255,255,255,.1)}}
 
-.face{padding-bottom:36px}
-.face:after{content:"boardcard.net";position:absolute;inset-inline:0;bottom:10px;text-align:center;font:600 12px/1 system-ui,-apple-system,Segoe UI,sans-serif;letter-spacing:.6px;color:var(--ink);opacity:.28;direction:ltr;pointer-events:none;-webkit-user-select:none;user-select:none}
+
+.face .opts:before{content:"boardcard.net";display:block;text-align:center;font:600 12px/1 system-ui,-apple-system,Segoe UI,sans-serif;letter-spacing:.6px;color:var(--ink);opacity:.28;direction:ltr;pointer-events:none;-webkit-user-select:none;user-select:none;padding:2px 0 4px}
