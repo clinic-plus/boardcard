@@ -6,3 +6,14 @@
 .sk1{height:84px}.sk2{height:46px;width:60%}.sk3{height:92px}
 @keyframes skm{0%{background-position:100% 0}100%{background-position:0 0}}
 @media (prefers-reduced-motion:reduce){.skb{animation:none}}
+:root{--rv:#2a78d6}:root:not([data-theme=light]){--rv:#3987e5}:root[data-theme=dark]{--rv:#3987e5}:root[data-theme=light]{--rv:#2a78d6}
+.rvcard{padding:12px 10px}.rvhd{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}.rvhd h3{margin:0;font-size:15px}.rvhd .ib{padding:6px 12px;font-size:13px;border-radius:12px}
+.rvwrap{position:relative}.rvsvg{width:100%;height:auto;display:block;overflow:visible}
+.rvg{stroke:var(--line);stroke-width:1}.rvt{fill:var(--muted);font-size:10px;font-family:inherit}.rvv{fill:var(--ink);font-size:11px;font-weight:600;font-family:inherit}
+.rvb{fill:var(--rv);transition:opacity .15s}.rvwrap:has(.rvb.on) .rvb:not(.on){opacity:.55}.rvh{fill:transparent;cursor:pointer;outline:none}.rvh:focus-visible{stroke:var(--ink);stroke-width:1.5}
+.rvtip{position:absolute;top:0;transform:translateX(-50%);background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:6px 10px;box-shadow:var(--glass-sh);pointer-events:none;white-space:nowrap;text-align:center;z-index:2}.rvtip b{display:block;font-size:14px;color:var(--ink)}.rvtip span{display:block;font-size:12px;color:var(--muted)}
+.rvbody{transition:opacity .2s}
+.rvr{background:var(--glass);border:1px solid var(--glass-brd);border-radius:16px;padding:10px 12px;margin-bottom:8px;box-shadow:var(--glass-sh)}.rvn{display:flex;justify-content:space-between;gap:8px;font-weight:600}.rvbar{height:8px;border-radius:4px;background:var(--chip);margin:8px 0 6px;overflow:hidden}.rvbar i{display:block;height:100%;border-radius:4px;background:var(--rv)}.rvs{font-size:12px;color:var(--muted)}
+.rvtbl{width:100%;border-collapse:collapse;font-size:13px}.rvtbl th,.rvtbl td{padding:6px 8px;text-align:start;border-bottom:1px solid var(--line)}.rvtbl th{color:var(--muted);font-weight:600}
+@media(prefers-reduced-motion:reduce){.rvb,.rvbody{transition:none}}
+.rvbody .kpi b{font-size:24px}.rvwrap .rvtip{top:-6px}
