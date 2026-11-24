@@ -1,6 +1,6 @@
 // Boardcard Worker: question images (admin only). Static site is served by the assets binding.
-const SB = 'https://qiejgpvawhxzqmxdjmbd.supabase.co';
-const KEY = 'sb_publishable_rc10-toTkzah_8IN-JA0uQ_RrA2TFiv';
+const SB = 'https://zpyajqolfdnhdnlvmura.supabase.co';
+const KEY = 'sb_publishable_Y-WPWul8817xMEdAHjCjwQ_-tQ4Y2Ii';
 const MAX_BYTES = 500 * 1024;
 const PATH_RE = /^q\/\d{6}\/[a-f0-9]{16}\.(webp|jpg)$/;
 // Student data (gzip JSON), private bucket. Limits are measured on the gzip bytes.
