@@ -7,3 +7,9 @@
 .nm[data-au]{cursor:pointer;text-decoration:underline dotted}
 .rtgap{text-align:center;color:var(--muted);letter-spacing:4px;line-height:1;margin:2px 0 8px}
 .grchat{height:calc(100dvh - 330px);min-height:240px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:4px 2px}.gm{align-self:flex-start;max-width:86%;background:var(--glass);border:1px solid var(--glass-brd);border-radius:16px;padding:8px 12px;box-shadow:var(--glass-sh)}.gm.me{align-self:flex-end;background:var(--good-bg)}.gm .gh{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted)}.gm .gh b{font-size:13px;color:var(--ink)}.gm .gx{margin-inline-start:auto;background:none;border:0;color:var(--muted);padding:0 4px;overflow:visible;font-size:13px}.gm .gb{white-space:pre-wrap;word-break:break-word;font-size:15px}.grimg{display:block;max-width:100%;max-height:260px;border-radius:12px;margin-top:6px;background:var(--chip);min-height:60px;cursor:zoom-in}.grfile{margin-top:6px;padding:6px 12px;min-height:40px;font-size:14px}.grin{display:flex;gap:8px;align-items:flex-end}.grin textarea{flex:1;min-height:48px;max-height:120px;resize:none}.grin .pill{min-height:48px}.grin .btn{padding:10px 16px}
+
+.sk{display:grid;gap:12px}
+.skb{border-radius:18px;border:1px solid var(--glass-brd);background:linear-gradient(100deg,var(--chip) 30%,var(--glass-strong) 50%,var(--chip) 70%);background-size:300% 100%;animation:skm 1.5s linear infinite}
+.sk1{height:84px}.sk2{height:46px;width:60%}.sk3{height:92px}
+@keyframes skm{0%{background-position:100% 0}100%{background-position:0 0}}
+@media (prefers-reduced-motion:reduce){.skb{animation:none}}
