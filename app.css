@@ -13,3 +13,8 @@
 .sk1{height:84px}.sk2{height:46px;width:60%}.sk3{height:92px}
 @keyframes skm{0%{background-position:100% 0}100%{background-position:0 0}}
 @media (prefers-reduced-motion:reduce){.skb{animation:none}}
+
+:root[data-lite] *{-webkit-backdrop-filter:none!important;backdrop-filter:none!important}
+:root[data-lite]{--glass:rgba(255,255,255,.9);--glass-strong:rgba(255,255,255,.97);--field:rgba(255,255,255,.9)}
+:root[data-lite][data-theme=dark]{--glass:rgba(24,48,80,.94);--glass-strong:rgba(16,36,62,.98);--field:rgba(255,255,255,.1)}
+@media(prefers-color-scheme:dark){:root[data-lite]:not([data-theme=light]){--glass:rgba(24,48,80,.94);--glass-strong:rgba(16,36,62,.98);--field:rgba(255,255,255,.1)}}
