@@ -17,3 +17,4 @@
 .rvtbl{width:100%;border-collapse:collapse;font-size:13px}.rvtbl th,.rvtbl td{padding:6px 8px;text-align:start;border-bottom:1px solid var(--line)}.rvtbl th{color:var(--muted);font-weight:600}
 @media(prefers-reduced-motion:reduce){.rvb,.rvbody{transition:none}}
 .rvbody .kpi b{font-size:24px}.rvwrap .rvtip{top:-6px}
+.rvf{display:flex;gap:8px;margin:0 0 12px}.rvf .in{flex:1;margin:0!important;min-width:0}
